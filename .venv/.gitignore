@@ -1,18 +1,3 @@
-# Virtual environment
+# Created by venv; see https://docs.python.org/3/library/venv.html
+*
 .venv/
-
-# Python cache files
-__pycache__/
-*.py[cod]
-
-# SQLite database
-db/*.db
-
-# Environment variables
-.env
-
-# Log files
-logs/
-
-# VS Code workspace settings (optional)
-.vscode/

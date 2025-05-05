@@ -1,4 +1,4 @@
-#!c:\Users\ytaka\OneDrive\Documents\pj_fire\.venv\Scripts\python.exe
+#!C:\Users\ytaka\OneDrive\Documents\pj_fire\.venv\Scripts\python.exe
 
 import datetime
 import os
