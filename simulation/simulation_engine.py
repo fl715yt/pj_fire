@@ -1,32 +1,68 @@
 # simulation_engine.py
+
 from datetime import datetime
-from portfolio import get_cash, update_cash, get_open_positions, log_sim_trade
+from simulation.portfolio import (
+    get_cash,
+    update_cash,
+    get_open_positions,
+    log_sim_trade
+)
+from simulation.logger import log_info, log_warning
+from config import FORCED_EXIT_THRESHOLD, DEFAULT_LOT_SIZE
 
-DEFAULT_LOT_SIZE = 100
+
+def evaluate_forced_exit(new_stock, held_stocks):
+    """
+    If any held stock has a lower score by > threshold, return its ticker for forced exit.
+    """
+    for held in held_stocks:
+        if (
+            new_stock["score"] >= held["score"] * (1 + FORCED_EXIT_THRESHOLD)
+            and new_stock["score"] > 0
+        ):
+            return held["ticker"]
+    return None
 
 
-def simulate_trades(ranked_df, strategy_name="mean_reversion"):
+def simulate_trades(ranked_stocks, strategy_name="mean_reversion"):
+    """
+    Main simulation logic. Executes 1 trade per day based on ranking and available cash.
+    """
     today = datetime.now().strftime("%Y-%m-%d")
-    available_cash = get_cash()
-    open_positions = set(get_open_positions())
+    cash = get_cash()
+    held_tickers = set(get_open_positions())
+    executed = False
 
-    for _, row in ranked_df.iterrows():
-        ticker = row["ticker"]
-        price = row["close_price"]
+    for stock in ranked_stocks:
+        ticker = stock["ticker"]
+        price = stock["price"]
+        score = stock["score"]
 
-        if ticker in open_positions:
+        if ticker in held_tickers:
             continue
 
-        trade_amount = price * DEFAULT_LOT_SIZE
-        if trade_amount > available_cash:
-            affordable_shares = int(available_cash // price)
-            if affordable_shares < 1:
-                continue
-            shares = affordable_shares
-        else:
-            shares = DEFAULT_LOT_SIZE
+        # Forced exit logic (1-for-1 swap)
+        to_exit = evaluate_forced_exit(stock, ranked_stocks)
+        if to_exit:
+            log_info(f"♻️ Forced exit triggered: {to_exit} → {ticker}")
+            # Remove the exited stock
+            held_tickers.remove(to_exit)
 
+        # Position sizing
+        max_affordable = int(cash // price)
+        shares = min(DEFAULT_LOT_SIZE, max_affordable)
+
+        if shares < 1:
+            log_warning(f"❌ Skipping {ticker}: Not enough cash.")
+            continue
+
+        cost = shares * price
+        update_cash(cash - cost)
         log_sim_trade(ticker, strategy_name, price, shares, today)
-        update_cash(available_cash - (price * shares))
-        print(f"[SIM] Bought {shares} shares of {ticker} @ {price:.2f} ({strategy_name})")
-        break  # Buy only 1 per day for now
+
+        log_info(f"✅ Simulated BUY: {ticker} x{shares} @ ¥{price:.2f}")
+        executed = True
+        break  # One trade per day
+
+    if not executed:
+        log_info("📭 No trades executed today.")

@@ -1,12 +1,14 @@
 import sqlite3
+import os
 
 DB_FILE = "db/pj_fire.db"
+os.makedirs("db", exist_ok=True)
 
 def create_tables():
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
 
-    # ---- Static Stock Metadata ----
+    # ─── Stock Metadata ────────────────────────────────
     cur.execute("""
     CREATE TABLE IF NOT EXISTS stock_metadata (
         ticker TEXT PRIMARY KEY,
@@ -16,7 +18,7 @@ def create_tables():
     )
     """)
 
-    # ---- Daily Price Snapshots ----
+    # ─── Daily Snapshots ───────────────────────────────
     cur.execute("""
     CREATE TABLE IF NOT EXISTS stock_snapshots (
         date TEXT,
@@ -27,7 +29,7 @@ def create_tables():
     )
     """)
 
-    # ---- Market Index Snapshots ----
+    # ─── Market Index Snapshots ────────────────────────
     cur.execute("""
     CREATE TABLE IF NOT EXISTS market_snapshots (
         date TEXT,
@@ -37,7 +39,7 @@ def create_tables():
     )
     """)
 
-    # ---- Fundamentals (Latest + Previous FY) ----
+    # ─── Fundamentals with TDNet Risk ──────────────────
     cur.execute("""
     CREATE TABLE IF NOT EXISTS stock_fundamentals (
         ticker TEXT,
@@ -49,16 +51,17 @@ def create_tables():
         operating_profit REAL,
         eps REAL,
         dividend REAL,
+        tdnet_risk BOOLEAN DEFAULT 0,
         PRIMARY KEY (ticker, fiscal_year)
     )
     """)
 
-    # ---- Simulation Trade Logs ----
+    # ─── Simulated Trades ──────────────────────────────
     cur.execute("""
     CREATE TABLE IF NOT EXISTS sim_trades (
         date TEXT,
         ticker TEXT,
-        action TEXT,  -- BUY / SELL
+        action TEXT,
         quantity INTEGER,
         price REAL,
         reason TEXT,
@@ -67,9 +70,17 @@ def create_tables():
     )
     """)
 
+    # ─── TDNet Log Table to Prevent Duplicate Scans ────
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS tdnet_logs (
+        pub_date TEXT PRIMARY KEY,
+        title TEXT
+    )
+    """)
+
     conn.commit()
     conn.close()
-    print("✅ Tables created or verified.")
+    print("✅ All tables created or verified.")
 
 if __name__ == "__main__":
     create_tables()
