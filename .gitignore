@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+*.db
+*.sqlite3
+*.log
+.ipynb_checkpoints/
+.DS_Store
+.vscode/
+git_workflow.txt
