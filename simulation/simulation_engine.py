@@ -8,7 +8,7 @@ from simulation.portfolio import (
     log_sim_trade
 )
 from simulation.logger import log_info, log_warning
-from config import FORCED_EXIT_THRESHOLD, DEFAULT_LOT_SIZE
+from utils.config import FORCED_EXIT_THRESHOLD, DEFAULT_LOT_SIZE
 
 
 def evaluate_forced_exit(new_stock, held_stocks):

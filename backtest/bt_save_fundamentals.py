@@ -1,9 +1,7 @@
-# backtest/bt_save_fundamentals.py
-
 import os
+import requests
 import json
 import sqlite3
-import requests
 import pandas as pd
 from datetime import datetime
 from dotenv import load_dotenv
@@ -42,9 +40,25 @@ def store_fundamentals(df):
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
 
+    # Ensure table exists
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS bt_fundamentals (
+            ticker TEXT,
+            fiscal_year TEXT,
+            revenue REAL,
+            net_income REAL,
+            equity_ratio REAL,
+            equity REAL,
+            operating_profit REAL,
+            eps REAL,
+            dividend REAL,
+            PRIMARY KEY (ticker, fiscal_year)
+        )
+    """)
+
     for _, row in df.iterrows():
         cur.execute("""
-            INSERT OR REPLACE INTO stock_fundamentals
+            INSERT OR REPLACE INTO bt_fundamentals
             (ticker, fiscal_year, revenue, net_income, equity_ratio, equity,
              operating_profit, eps, dividend)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -91,6 +105,7 @@ def fetch_all_fundamentals():
             if df.empty:
                 continue
 
+            # Convert columns
             for col in [
                 "NetSales", "Profit", "EquityToAssetRatio", "Equity",
                 "OperatingProfit", "EarningsPerShare", "ResultDividendPerShareAnnual"
@@ -100,7 +115,7 @@ def fetch_all_fundamentals():
             df["ticker"] = ticker
             df["fiscal_year"] = pd.to_datetime(df["CurrentPeriodEndDate"]).dt.year.astype(str)
 
-            df = df[[
+            df = df[[ 
                 "ticker", "fiscal_year", "NetSales", "Profit", "EquityToAssetRatio",
                 "Equity", "OperatingProfit", "EarningsPerShare", "ResultDividendPerShareAnnual"
             ]]
@@ -115,7 +130,7 @@ def fetch_all_fundamentals():
             }, inplace=True)
 
             df.sort_values("fiscal_year", ascending=False, inplace=True)
-            df = df.head(2)
+            df = df.head(2)  # Only latest 2 FYs
 
             all_records.append(df)
 
