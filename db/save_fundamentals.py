@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DB_FILE = "db/backtest.db"
+DB_FILE = "db/pj_fire.db"  # adjust if needed
 JQUANTS_EMAIL = os.getenv("JQUANTS_EMAIL")
 JQUANTS_PASSWORD = os.getenv("JQUANTS_PASSWORD")
 
@@ -42,12 +42,28 @@ def store_fundamentals(df):
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS stock_fundamentals (
+            ticker TEXT,
+            fiscal_year TEXT,
+            revenue REAL,
+            net_income REAL,
+            equity_ratio REAL,
+            equity REAL,
+            operating_profit REAL,
+            eps REAL,
+            dividend REAL,
+            company_name_ja TEXT,
+            PRIMARY KEY (ticker, fiscal_year)
+        )
+    """)
+
     for _, row in df.iterrows():
         cur.execute("""
             INSERT OR REPLACE INTO stock_fundamentals
             (ticker, fiscal_year, revenue, net_income, equity_ratio, equity,
-             operating_profit, eps, dividend)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             operating_profit, eps, dividend, company_name_ja)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             row["ticker"],
             row["fiscal_year"],
@@ -57,7 +73,8 @@ def store_fundamentals(df):
             row["equity"],
             row["operating_profit"],
             row["eps"],
-            row["dividend"]
+            row["dividend"],
+            row["company_name_ja"]
         ))
 
     conn.commit()
@@ -85,7 +102,7 @@ def fetch_all_fundamentals():
                 continue
 
             df = df[
-                (df["TypeOfCurrentPeriod"] == "FY") &
+                (df["TypeOfCurrentPeriod"] == "FY") & 
                 (df["TypeOfDocument"].str.contains("FY", na=False))
             ]
             if df.empty:
@@ -99,10 +116,12 @@ def fetch_all_fundamentals():
 
             df["ticker"] = ticker
             df["fiscal_year"] = pd.to_datetime(df["CurrentPeriodEndDate"]).dt.year.astype(str)
+            df["company_name_ja"] = df["CompanyNameJa"]
 
-            df = df[[
+            df = df[[  # include company name here
                 "ticker", "fiscal_year", "NetSales", "Profit", "EquityToAssetRatio",
-                "Equity", "OperatingProfit", "EarningsPerShare", "ResultDividendPerShareAnnual"
+                "Equity", "OperatingProfit", "EarningsPerShare", "ResultDividendPerShareAnnual",
+                "company_name_ja"
             ]]
             df.rename(columns={
                 "NetSales": "revenue",
