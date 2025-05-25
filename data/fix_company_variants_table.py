@@ -25,6 +25,7 @@ SUFFIX_ABBREVIATIONS = [
     ("リース", ""),
     ("建設", ""),
     # Add more if new suffixes appear in future scans
+    ("製薬", ""),
 ]
 
 BAD_PATTERNS = [
