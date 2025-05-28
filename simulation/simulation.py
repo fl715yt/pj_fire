@@ -1,70 +1,46 @@
-# 📁 Folder: simulation/
+# simulation/simulation.py
 
 import sqlite3
 from datetime import datetime
+from simulation.db_utils import init_pjfire_tables
+from simulation.portfolio import add_position, close_position, update_cash, get_latest_cash
 
-DB_FILE = "db/pj_fire.db"
-
+DB_FILE = "simulation/pjfire.db"  # Or use os.getenv("PJ_FIRE_DB") for more flexibility
 
 def execute_trade(ticker, quantity, price, trade_type, strategy, reason):
     """
-    Executes a trade and logs it into sim_trades table.
+    Executes a trade and logs it into trades table,
+    then updates portfolio and cash tables.
     """
     conn = sqlite3.connect(DB_FILE)
+    init_pjfire_tables(conn)
     cur = conn.cursor()
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
     # Insert trade into log
     cur.execute("""
-        INSERT INTO sim_trades (
+        INSERT INTO trades (
             datetime, ticker, quantity, price, trade_type, strategy, reason
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
     """, (now, ticker, quantity, price, trade_type, strategy, reason))
 
-    # Update portfolio
+    # Update portfolio & cash
+    today = datetime.now().strftime("%Y-%m-%d")
+    cash = get_latest_cash()
     if trade_type == "buy":
-        cur.execute("""
-            INSERT INTO portfolio (ticker, quantity, avg_price)
-            VALUES (?, ?, ?)
-            ON CONFLICT(ticker) DO UPDATE SET
-                quantity = quantity + excluded.quantity,
-                avg_price = (
-                    (portfolio.quantity * portfolio.avg_price + excluded.quantity * excluded.avg_price)
-                    / (portfolio.quantity + excluded.quantity)
-                )
-        """, (ticker, quantity, price))
-
-        cur.execute("""
-            UPDATE sim_cash
-            SET balance = balance - ?
-        """, (quantity * price,))
-
+        add_position(ticker, today, quantity, price, strategy)
+        update_cash(cash - quantity * price, today)
     elif trade_type == "sell":
-        cur.execute("""
-            UPDATE portfolio
-            SET quantity = quantity - ?
-            WHERE ticker = ?
-        """, (quantity, ticker))
-
-        cur.execute("""
-            DELETE FROM portfolio
-            WHERE ticker = ? AND quantity <= 0
-        """, (ticker,))
-
-        cur.execute("""
-            UPDATE sim_cash
-            SET balance = balance + ?
-        """, (quantity * price,))
+        close_position(ticker, today)
+        update_cash(cash + quantity * price, today)
 
     conn.commit()
     conn.close()
 
-
 if __name__ == "__main__":
     # 🔧 Example manual test run
     execute_trade(
-        ticker="7203.T",
+        ticker="7203",
         quantity=100,
         price=2000,
         trade_type="buy",
