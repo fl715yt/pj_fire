@@ -1,8 +1,9 @@
 """
-PJ Fire — Unified Reasoning Module
+PJ Fire — Unified Reasoning Module (Macro/Sector Hybrid, GPT, Fundamentals)
 Classifies/categorizes reason for stock price drops, using:
-- GPT-based news analysis (primary if available)
-- Fundamentals (FY and TTM/quarterly)
+- Macro/sector drop logic (ETF or sector mean)
+- GPT-based news analysis
+- Fundamentals (FY, TTM/quarterly)
 - Event-driven checks (earnings, macro, etc.)
 Usable in both simulation and backtest.
 """
@@ -11,7 +12,7 @@ import os
 import pandas as pd
 import time
 from dotenv import load_dotenv
-from simulation.db_utils import get_fundamentals, get_quarterly_fundamentals
+from simulation.db_utils import get_fundamentals, get_quarterly_fundamentals, get_prices
 from simulation.fundamental_features import extract_fy_features, extract_ttm_features, is_broken_fundamental
 from simulation.fetch_news import fetch_news_for_ticker
 from simulation.news_reason_gpt import categorize_reason_with_gpt, CATEGORY_SCORING
@@ -21,6 +22,7 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GPT_MODEL = os.getenv("PJ_FIRE_GPT_MODEL", "gpt-4o")
 GPT_DELAY_SEC = 1.2
+UNIVERSE_CSV = os.getenv("PJ_FIRE_UNIVERSE_CSV", "pjfire_topix_company_patterns_expanded.csv")
 
 REASONING_CATEGORY_LABELS = [
     "misinterpreted_news",
@@ -30,7 +32,95 @@ REASONING_CATEGORY_LABELS = [
     "macro_or_sector_drop"
 ]
 
-def categorize_drop_reason(conn, ticker, drop_date, price_drop_pct, use_gpt=True):
+SECTOR_ETF_MAP = {
+    "食品":      "1617",
+    "エネルギー資源": "1618",
+    "建設・資材":   "1619",
+    "素材・化学":   "1620",
+    "医薬品":     "1621",
+    "自動車・輸送機": "1622",
+    "鉄鋼・非鉄":   "1623",
+    "機械":   "1624",
+    "電機・精密": "1625",
+    "情報通信・サービスその他":   "1626",
+    "電気・ガス":   "1627",
+    "運輸・物流":       "1628",
+    "商社・卸売":       "1629",
+    "小売": "1630",
+    "銀行": "1631",
+    "金融（除く銀行）":     "1632",
+    "不動産":     "1633",
+}
+
+def is_macro_or_sector_drop(conn, ticker, drop_date, price_drop_pct, sector_code=None, market_ticker="1306", sector_etf_map=SECTOR_ETF_MAP):
+    """
+    Returns True if the drop is likely macro/sector-driven (ETF or sector mean).
+    Tries sector ETF first; else falls back to sector mean.
+    """
+    # --- 1. Market ETF (TOPIX: 1306) ---
+    try:
+        market_df = get_prices(conn, market_ticker)
+        m_row = market_df[market_df["date"] == drop_date]
+        if not m_row.empty:
+            market_idx = market_df.index[market_df["date"] == drop_date][0]
+            if market_idx > 0:
+                prev_market_close = market_df.iloc[market_idx-1]["close"]
+                market_return = (m_row.iloc[0]["close"] - prev_market_close) / prev_market_close
+            else:
+                market_return = 0
+        else:
+            market_return = 0
+    except Exception:
+        market_return = 0
+
+    # --- 2. Sector ETF (if mapping provided and ETF exists for sector) ---
+    sector_etf_return = None
+    if sector_etf_map and sector_code and sector_code in sector_etf_map:
+        sector_etf = sector_etf_map[sector_code]
+        try:
+            etf_df = get_prices(conn, sector_etf)
+            etf_row = etf_df[etf_df["date"] == drop_date]
+            if not etf_row.empty:
+                etf_idx = etf_df.index[etf_df["date"] == drop_date][0]
+                if etf_idx > 0:
+                    prev_etf_close = etf_df.iloc[etf_idx-1]["close"]
+                    if prev_etf_close != 0:
+                        sector_etf_return = (etf_row.iloc[0]["close"] - prev_etf_close) / prev_etf_close
+        except Exception:
+            sector_etf_return = None
+
+    # --- 3. Sector mean fallback ---
+    sector_mean_return = None
+    if (sector_etf_return is None) and sector_code:
+        try:
+            universe = pd.read_csv(UNIVERSE_CSV, dtype=str)
+            sector_tickers = universe[universe["sector17"] == sector_code]["ticker"].tolist()
+            returns = []
+            for s in sector_tickers:
+                df = get_prices(conn, s)
+                s_row = df[df["date"] == drop_date]
+                if not s_row.empty:
+                    s_idx = df.index[df["date"] == drop_date][0]
+                    if s_idx > 0:
+                        prev_close = df.iloc[s_idx-1]["close"]
+                        if prev_close != 0:
+                            returns.append((s_row.iloc[0]["close"] - prev_close) / prev_close)
+            if returns:
+                sector_mean_return = sum(returns) / len(returns)
+        except Exception:
+            sector_mean_return = None
+
+    # --- 4. Decision logic: macro or sector-driven? ---
+    # If drop matches (within 1.5x) *any* of market, sector ETF, or sector mean, treat as sector/macro-driven
+    for ref_return in [market_return, sector_etf_return, sector_mean_return]:
+        if ref_return is not None:
+            if abs(price_drop_pct - ref_return) < 0.015:
+                return True
+            if price_drop_pct < 0 and abs(price_drop_pct) < abs(ref_return) * 1.5:
+                return True
+    return False
+
+def categorize_drop_reason(conn, ticker, drop_date, price_drop_pct, sector_code=None, use_gpt=True):
     """
     Returns:
       reason_category: e.g. "misinterpreted_news", "very_bad_news", etc.
@@ -39,6 +129,10 @@ def categorize_drop_reason(conn, ticker, drop_date, price_drop_pct, use_gpt=True
       ttm_features: dict
       headlines: str
     """
+    # --- Macro/Sector check (before anything else!) ---
+    if is_macro_or_sector_drop(conn, ticker, drop_date, price_drop_pct, sector_code=sector_code):
+        return "macro_or_sector_drop", "Drop matches market/sector move.", {}, {}, ""
+
     # --- 1. Fetch news headlines ---
     headlines = fetch_news_for_ticker(ticker, drop_date)
     gpt_category = None
@@ -50,8 +144,6 @@ def categorize_drop_reason(conn, ticker, drop_date, price_drop_pct, use_gpt=True
         if score == 0.0:
             explanation = f"[EXCLUDED] {ticker} {drop_date} due to GPT category: {gpt_category}"
             return gpt_category, explanation, {}, {}, headlines
-        # If the GPT category is "misinterpreted_news" or "slightly_bad_news" or "no_news", continue to fundamental checks below.
-        # If it's "very_bad_news" or "macro_or_sector_drop", treat as excluded and return here.
 
     # --- 3. Fundamentals: FY + Quarterly/TTM ---
     df_fy = get_fundamentals(conn, ticker, period_type="FY", n=5)
@@ -99,6 +191,41 @@ def categorize_drop_reason(conn, ticker, drop_date, price_drop_pct, use_gpt=True
 
     return reason, explanation, fy_feat, ttm_feat, headlines
 
-# For backtest, just do:
-# from simulation.reasoning import categorize_drop_reason
-
+def attach_reason_to_candidates(conn, candidates, use_gpt=True, verbose=False):
+    """
+    For a list of candidate dicts, attaches:
+      - reason_category
+      - reason_explanation
+      - fy_features
+      - ttm_features
+      - headlines
+    Drops candidates with excluded GPT categories (very_bad_news, macro_or_sector_drop, fundamental-driven, broken).
+    Returns filtered & enriched list.
+    """
+    enriched = []
+    for c in candidates:
+        ticker = c["ticker"]
+        date = c["date"]
+        price_drop_pct = c.get("price_drop_pct", 0)
+        sector_code = c.get("sector17", None)
+        # Run the canonical drop reason classifier
+        reason, explanation, fy_feat, ttm_feat, headlines = categorize_drop_reason(
+            conn, ticker, date, price_drop_pct, sector_code=sector_code, use_gpt=use_gpt
+        )
+        # Exclude if reason is a filter-out category
+        if reason in ["very_bad_news", "macro_or_sector_drop", "fundamental-driven", "broken"]:
+            if verbose:
+                print(f"[SKIP] {ticker} {date}: {reason} ({explanation})")
+            continue
+        c["reason_category"] = reason
+        c["reason_explanation"] = explanation
+        c["fy_features"] = fy_feat
+        c["ttm_features"] = ttm_feat
+        c["headlines"] = headlines
+        enriched.append(c)
+        if verbose:
+            print(f"[PASS] {ticker} {date}: {reason} ({explanation})")
+        # Optional: avoid hitting API rate limits
+        if use_gpt:
+            time.sleep(GPT_DELAY_SEC)
+    return enriched

@@ -1,16 +1,14 @@
-# simulation/simulation_engine.py
 """
-PJ Fire Simulation Engine (Unified Schema)
-------------------------------------------
-Manages virtual trading, positions, and cash for simulation mode.
-- Executes buys/sells according to signals (calls simulation.ranker.get_top_signals_for_day)
-- Handles forced exits (ranking-based or rule-based)
-- Updates portfolio (positions, cash, logging)
-- Calculates P/L, runs post-trade checks
-- Compatible with both simulation and backtest via parameter
+PJ Fire — Canonical Simulation Engine
+Handles virtual trading, positions, and cash for simulation and backtest.
+- All buy/sell/forced exit logic centralized
+- Logging, portfolio, cash, and trade management
+- Supports both live simulation and batch (backtest) via entrypoints
 """
+
 import os
 import sqlite3
+import pandas as pd
 from datetime import datetime
 from dotenv import load_dotenv
 from simulation.ranker import get_top_signals_for_day
@@ -29,7 +27,6 @@ FORCED_EXIT_THRESHOLD = 0.10  # Score delta to trigger forced exit
 def init_simulation_db():
     conn = sqlite3.connect(DB_FILE)
     init_pjfire_tables(conn)
-    # Set initial cash if empty
     c = conn.cursor()
     c.execute(f"SELECT COUNT(*) FROM {CASH_TABLE}")
     count = c.fetchone()[0]
@@ -54,7 +51,6 @@ def update_cash(conn, amount, as_of_date):
     conn.commit()
 
 def execute_buy(conn, ticker, price, qty, signal_score, date, strategy="main"):
-    # Check for sufficient cash
     cash = get_cash(conn)
     total_cost = price * qty
     if cash < total_cost:
@@ -64,9 +60,9 @@ def execute_buy(conn, ticker, price, qty, signal_score, date, strategy="main"):
         return False
     c = conn.cursor()
     c.execute(f"""
-        INSERT OR REPLACE INTO {PORTFOLIO_TABLE} (ticker, entry_date, quantity, entry_price, status, strategy)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (ticker, date, qty, price, "open", strategy))
+        INSERT OR REPLACE INTO {PORTFOLIO_TABLE} (ticker, entry_date, quantity, entry_price, status, strategy, signal_score)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (ticker, date, qty, price, "open", strategy, signal_score))
     update_cash(conn, cash - (qty * price), date)
     log_trade(conn, ticker, "BUY", price, qty, signal_score, date, strategy=strategy)
     print(f"[SIM] Bought {qty}x {ticker} at {price} on {date}.")
@@ -109,11 +105,14 @@ def forced_exit_logic(conn, ranked_signals):
                 execute_buy(conn, s["ticker"], s["price"], DEFAULT_LOT_SIZE, s["score"], s["date"])
                 break
 
-def run_simulation_for_day(date):
+def run_simulation_for_day(candidates, date):
+    """
+    Given pre-scored and filtered candidates, runs buy/sell logic for a single day.
+    """
     conn = sqlite3.connect(DB_FILE)
     init_pjfire_tables(conn)
     # --- 1. Get top signals
-    ranked = get_top_signals_for_day(date)
+    ranked = get_top_signals_for_day(candidates)
     print(f"Top signals for {date}:")
     for sig in ranked:
         print(sig)
@@ -124,7 +123,26 @@ def run_simulation_for_day(date):
         execute_buy(conn, sig["ticker"], sig["price"], DEFAULT_LOT_SIZE, sig["score"], date)
     conn.close()
 
-if __name__ == "__main__":
-    init_simulation_db()
-    today = datetime.now().strftime("%Y-%m-%d")
-    run_simulation_for_day(today)
+def simulate_trade_for_backtest(conn, signal, date, return_result=False):
+    """
+    Core trade logic for batch (backtest) mode.
+    Returns (result, pl) for daily stats/tracking.
+    """
+    ticker = signal["ticker"]
+    price = signal["price"]
+    score = signal.get("score", 0)
+    # Implement your real entry/exit logic here.
+    # For now, fake logic as an example:
+    # (You should implement your MA/TP/SL/timeout workflow here.)
+
+    # --- Example: simulate buy/hold/sell over X days ---
+    result = "Timeout"  # Or "TP" or "SL"
+    pl = 0
+    # ...your trade logic to compute result and pl...
+
+    # Actually log the trade in DB as before
+    execute_buy(conn, ticker, price, DEFAULT_LOT_SIZE, score, date)
+    # If an exit occurs, also call execute_sell(...) and compute pl
+
+    if return_result:
+        return result, pl

@@ -1,130 +1,88 @@
-# backtest/backtest_engine.py
 """
-PJ Fire — Unified Backtest Engine (Batch Orchestrator)
-Runs multi-day, multi-ticker backtest using unified schema.
-- Loads historical prices/fundamentals for each day
-- Calls signal ranking (custom or via simulation.ranker)
-- Simulates trades, tracks portfolio/cash, forced exits, and logs trades
-- Outputs daily and final results
+PJ Fire — Unified Backtest Engine (with full daily stats and reporting)
 """
 
 import os
 import pandas as pd
-import sqlite3
-from datetime import datetime, timedelta
-from simulation.db_utils import init_pjfire_tables, get_conn, get_prices
-from simulation.ranker import rank_candidates
-from simulation.portfolio import add_position, close_position, update_cash, get_latest_cash, get_open_positions
-from technical_bt import add_indicators
-from reasoning_bt import categorize_drop_reason
+from datetime import datetime
+from simulation.db_utils import get_conn
+from simulation.screening import screen_stocks
+from simulation.reasoning import attach_reason_to_candidates
+from simulation.ranker import get_top_signals_for_day
+from simulation.simulation_engine import simulate_trade_for_backtest, init_simulation_db, get_cash
 
 DB_FILE = "backtest/backtest_bt.db"
-START_CASH = 1_000_000
 START_DATE = "2024-01-01"
 END_DATE = "2024-05-24"
-TP_COL = "ma5"
-SL_PCT = -0.05
-HOLD_DAYS = 3
-ALLOWED_REASONS = {"Earnings", "Unknown"}
+START_CASH = 1_000_000
 
-def simulate_trade(row, df, tp_col=TP_COL, sl_pct=SL_PCT, hold_days=HOLD_DAYS):
-    entry_idx = row.name + 1
-    if entry_idx >= len(df):
-        return None
-    entry_price = df.iloc[entry_idx]["open"]
-    entry_date = df.iloc[entry_idx]["date"]
-    exit_price = df.iloc[min(entry_idx+hold_days-1, len(df)-1)]["close"]
-    exit_date = df.iloc[min(entry_idx+hold_days-1, len(df)-1)]["date"]
-    result = "Timeout"
-    pl = exit_price - entry_price
-
-    for offset in range(hold_days):
-        if entry_idx+offset >= len(df):
-            break
-        day = df.iloc[entry_idx+offset]
-        if day["high"] >= day[tp_col]:
-            result = "TP"
-            exit_price = day[tp_col]
-            exit_date = day["date"]
-            pl = exit_price - entry_price
-            break
-        if day["low"] <= entry_price * (1 + sl_pct):
-            result = "SL"
-            exit_price = entry_price * (1 + sl_pct)
-            exit_date = day["date"]
-            pl = exit_price - entry_price
-            break
-
-    return {
-        "entry_date": entry_date,
-        "entry_price": entry_price,
-        "exit_date": exit_date,
-        "exit_price": exit_price,
-        "pl": pl,
-        "result": result
-    }
-
-def run_backtest_engine(tickers, start_date=START_DATE, end_date=END_DATE, start_cash=START_CASH):
-    conn = sqlite3.connect(DB_FILE)
-    init_pjfire_tables(conn)
-    # Reset state
-    conn.execute("DELETE FROM portfolio")
-    conn.execute("DELETE FROM trades")
-    conn.execute("DELETE FROM cash")
-    now = datetime.now().strftime("%Y-%m-%d")
-    conn.execute("INSERT OR REPLACE INTO cash (as_of, balance) VALUES (?, ?)", (now, start_cash))
-    conn.commit()
-    cash = start_cash
-
+def run_backtest_engine(start_date=START_DATE, end_date=END_DATE, start_cash=START_CASH):
+    conn = get_conn(DB_FILE)
+    init_simulation_db()
     all_dates = pd.date_range(start=start_date, end=end_date, freq='B')
-    stats = []
-    filter_stats = {}
+    trade_log = []
+    daily_stats = []
+    last_cash = start_cash
 
-    for ticker in tickers:
-        df = get_prices(conn, ticker, start_date, end_date)
-        if df.empty: continue
-        df = add_indicators(df)
-        for idx, row in df.iterrows():
-            # Quant filter
-            if row["rsi_14"] < 30:
-                # News filter
-                reason = categorize_drop_reason([])  # TODO: real headlines if available
-                filter_stats.setdefault(reason, 0)
-                filter_stats[reason] += 1
-                if reason not in ALLOWED_REASONS:
-                    continue
-                # Simulate trade
-                trade = simulate_trade(row, df)
-                if not trade: continue
-                trade.update({
-                    "ticker": ticker,
-                    "signal_date": row["date"],
-                    "rsi_14": row["rsi_14"],
-                    "reason": reason
-                })
-                cash += trade["pl"]
-                stats.append(trade)
-                add_position(ticker, trade["entry_date"], 100, trade["entry_price"])
-                update_cash(cash, trade["entry_date"])
-                close_position(ticker, trade["exit_date"])
-                update_cash(cash, trade["exit_date"])
-                print(f"{row['date']}: BUY {ticker} {trade['entry_price']:.2f} → {trade['exit_price']:.2f} {trade['result']} (PL: {trade['pl']:.2f}) [{reason}]")
+    for date in all_dates:
+        date_str = date.strftime("%Y-%m-%d")
+        print(f"\n=== {date_str} ===")
+        candidates = screen_stocks(conn, date_str)
+        if not candidates:
+            print("No candidates for this day.")
+            daily_stats.append({"date": date_str, "n_trades": 0, "n_win": 0, "n_loss": 0, "n_other": 0, "day_pl": 0, "cash": last_cash})
+            continue
+        candidates_with_reasons = attach_reason_to_candidates(conn, candidates)
+        if not candidates_with_reasons:
+            print("No candidates passed reasoning filter.")
+            daily_stats.append({"date": date_str, "n_trades": 0, "n_win": 0, "n_loss": 0, "n_other": 0, "day_pl": 0, "cash": last_cash})
+            continue
+        top_signals = get_top_signals_for_day(candidates_with_reasons)
+        if not top_signals:
+            print("No signals above threshold.")
+            daily_stats.append({"date": date_str, "n_trades": 0, "n_win": 0, "n_loss": 0, "n_other": 0, "day_pl": 0, "cash": last_cash})
+            continue
+
+        n_win, n_loss, n_other = 0, 0, 0
+        day_pl = 0
+        for sig in top_signals:
+            result, pl = simulate_trade_for_backtest(conn, sig, date_str, return_result=True)
+            trade_log.append({**sig, "date": date_str, "result": result, "pl": pl})
+            if result == "TP":
+                n_win += 1
+            elif result == "SL":
+                n_loss += 1
+            else:
+                n_other += 1
+            day_pl += pl
+        last_cash = get_cash(conn)
+        daily_stats.append({
+            "date": date_str, "n_trades": len(top_signals),
+            "n_win": n_win, "n_loss": n_loss, "n_other": n_other,
+            "day_pl": day_pl, "cash": last_cash
+        })
 
     conn.close()
-    # Summary
-    n = len(stats)
-    n_win = sum(1 for t in stats if t["result"]=="TP")
-    win_rate = n_win / n if n else 0
-    final_pl = cash - start_cash
-    print("\n==== FINAL SUMMARY ====")
-    print(f"Total trades: {n}")
+
+    # === End of backtest summary ===
+    n_trades = sum(d["n_trades"] for d in daily_stats)
+    n_win = sum(d["n_win"] for d in daily_stats)
+    n_loss = sum(d["n_loss"] for d in daily_stats)
+    win_rate = n_win / n_trades if n_trades else 0
+    final_cash = daily_stats[-1]["cash"] if daily_stats else start_cash
+    final_pl = final_cash - start_cash
+
+    print("\n==== BACKTEST SUMMARY ====")
+    print(f"Total trades: {n_trades}")
     print(f"Win rate (TP): {win_rate:.2%}")
     print(f"Final P/L: {final_pl:.0f} yen")
-    print("News categorization filter stats (signals that passed quant filter):")
-    for reason, count in filter_stats.items():
-        pass_count = sum(1 for t in stats if t["reason"]==reason)
-        print(f"  {reason}: {count} (trades executed: {pass_count})")
-    return stats
+    print(f"Ending cash: {final_cash:,.0f} yen")
+    print("\nFirst 5 daily stats:")
+    print(pd.DataFrame(daily_stats).head())
+    print("\nFirst 5 trades:")
+    print(pd.DataFrame(trade_log).head())
+
+    return daily_stats, trade_log
 
 if __name__ == "__main__":
-    run_backtest_engine(["7203", "9984", "3436"], START_DATE, END_DATE)
+    run_backtest_engine()

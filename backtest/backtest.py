@@ -2,8 +2,8 @@
 
 import pandas as pd
 from simulation.db_utils import get_conn, get_prices, init_pjfire_tables
-from technical_bt import add_indicators
-from reasoning_bt import categorize_drop_reason
+from simulation.technical import add_indicators
+from simulation.reasoning import categorize_drop_reason
 
 DB_FILE = "backtest/backtest_bt.db"  # Use simulation/pjfire.db for simulation
 START_CASH = 1_000_000
