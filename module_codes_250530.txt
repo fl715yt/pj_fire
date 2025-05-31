@@ -1,0 +1,1900 @@
+simulation/portfolio.py
+
+# simulation/portfolio.py
+
+import sqlite3
+import os
+from dotenv import load_dotenv
+from simulation.db_utils import init_pjfire_tables
+
+load_dotenv()
+DB_FILE = os.getenv("PJ_FIRE_DB", "simulation/pjfire.db")  # Use backtest/backtest_bt.db for backtest if needed
+PORTFOLIO_TABLE = "portfolio"
+CASH_TABLE = "cash"
+
+def init_portfolio():
+    """Ensure all necessary tables exist for portfolio and cash management."""
+    conn = sqlite3.connect(DB_FILE)
+    init_pjfire_tables(conn)
+    conn.close()
+
+# --- POSITION CRUD ---
+
+def add_position(ticker, entry_date, quantity, entry_price, strategy="main"):
+    conn = sqlite3.connect(DB_FILE)
+    init_pjfire_tables(conn)
+    c = conn.cursor()
+    c.execute(f"""
+        INSERT OR REPLACE INTO {PORTFOLIO_TABLE} (ticker, entry_date, quantity, entry_price, status, strategy)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (ticker, entry_date, quantity, entry_price, "open", strategy))
+    conn.commit()
+    conn.close()
+
+def close_position(ticker, entry_date):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute(f"""
+        UPDATE {PORTFOLIO_TABLE}
+        SET status = 'closed'
+        WHERE ticker = ? AND entry_date = ?
+    """, (ticker, entry_date))
+    conn.commit()
+    conn.close()
+
+def get_open_positions():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute(f"""
+        SELECT ticker, entry_date, quantity, entry_price, strategy FROM {PORTFOLIO_TABLE}
+        WHERE status = 'open'
+    """)
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+# --- CASH CRUD ---
+
+def update_cash(amount, as_of_date):
+    conn = sqlite3.connect(DB_FILE)
+    init_pjfire_tables(conn)
+    c = conn.cursor()
+    c.execute(f"""
+        INSERT OR REPLACE INTO {CASH_TABLE} (as_of, balance) VALUES (?, ?)
+    """, (as_of_date, amount))
+    conn.commit()
+    conn.close()
+
+def get_latest_cash():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute(f"SELECT balance FROM {CASH_TABLE} ORDER BY as_of DESC LIMIT 1")
+    row = c.fetchone()
+    conn.close()
+    return float(row[0]) if row else 0.0
+
+def get_portfolio_snapshot():
+    return {
+        "positions": get_open_positions(),
+        "cash": get_latest_cash()
+    }
+
+# --- TEST ---
+if __name__ == "__main__":
+    print("[INIT] Portfolio DB setup...")
+    init_portfolio()
+    print("[ADD] Example position...")
+    add_position("7203", "2024-05-10", 100, 3500.5)
+    print("[CLOSE] Closing position...")
+    close_position("7203", "2024-05-10")
+    print("[CASH] Update cash...")
+    update_cash(1000000, "2024-05-10")
+    print("[SNAPSHOT]")
+    print(get_portfolio_snapshot())
+
+
+simulation/simulation.py
+
+import sqlite3
+from datetime import datetime
+from simulation.db_utils import init_pjfire_tables
+from simulation.portfolio import add_position, close_position, update_cash, get_latest_cash
+
+DB_FILE = "simulation/pjfire.db"  # Or use os.getenv("PJ_FIRE_DB") for more flexibility
+
+def execute_trade(ticker, quantity, price, trade_type, strategy, reason):
+    """
+    Executes a trade and logs it into trades table,
+    then updates portfolio and cash tables.
+    """
+    conn = sqlite3.connect(DB_FILE)
+    init_pjfire_tables(conn)
+    cur = conn.cursor()
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # Insert trade into log
+    cur.execute("""
+        INSERT INTO trades (
+            datetime, ticker, quantity, price, trade_type, strategy, reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (now, ticker, quantity, price, trade_type, strategy, reason))
+
+    # Update portfolio & cash
+    today = datetime.now().strftime("%Y-%m-%d")
+    cash = get_latest_cash()
+    if trade_type == "buy":
+        add_position(ticker, today, quantity, price, strategy)
+        update_cash(cash - quantity * price, today)
+    elif trade_type == "sell":
+        close_position(ticker, today)
+        update_cash(cash + quantity * price, today)
+
+    conn.commit()
+    conn.close()
+
+if __name__ == "__main__":
+    # 🔧 Example manual test run
+    execute_trade(
+        ticker="7203",
+        quantity=100,
+        price=2000,
+        trade_type="buy",
+        strategy="mean_reversion",
+        reason="Oversold with good fundamentals"
+    )
+
+
+backtest/backtest.py
+
+import pandas as pd
+from simulation.db_utils import get_conn, get_prices, init_pjfire_tables
+from simulation.technical import add_indicators
+from simulation.reasoning import categorize_drop_reason
+
+DB_FILE = "backtest/backtest_bt.db"  # Use simulation/pjfire.db for simulation
+START_CASH = 1_000_000
+TP_COL = "ma5"      # Take profit at MA(5) (change as needed)
+SL_PCT = -0.05      # 5% stop loss (e.g., -0.05 = -5%)
+HOLD_DAYS = 3
+ALLOWED_REASONS = {"Earnings", "Unknown"}
+
+def simulate_trade(row, df, tp_col=TP_COL, sl_pct=SL_PCT, hold_days=HOLD_DAYS):
+    entry_idx = row.name + 1
+    if entry_idx >= len(df):
+        return None  # Can't trade, no next day data
+
+    entry_price = df.iloc[entry_idx]["open"]
+    entry_date = df.iloc[entry_idx]["date"]
+    exit_price = df.iloc[min(entry_idx+hold_days-1, len(df)-1)]["close"]
+    exit_date = df.iloc[min(entry_idx+hold_days-1, len(df)-1)]["date"]
+    result = "Timeout"
+    pl = exit_price - entry_price
+
+    for offset in range(hold_days):
+        if entry_idx+offset >= len(df):
+            break
+        day = df.iloc[entry_idx+offset]
+        # TP: Price hits MA
+        if day["high"] >= day[tp_col]:
+            result = "TP"
+            exit_price = day[tp_col]
+            exit_date = day["date"]
+            pl = exit_price - entry_price
+            break
+        # SL: Price hits stop loss
+        if day["low"] <= entry_price * (1 + sl_pct):
+            result = "SL"
+            exit_price = entry_price * (1 + sl_pct)
+            exit_date = day["date"]
+            pl = exit_price - entry_price
+            break
+
+    return {
+        "entry_date": entry_date,
+        "entry_price": entry_price,
+        "exit_date": exit_date,
+        "exit_price": exit_price,
+        "pl": pl,
+        "result": result
+    }
+
+def run_backtest(tickers, start_date, end_date):
+    conn = get_conn(DB_FILE)
+    init_pjfire_tables(conn)
+    stats = []
+    filter_stats = {}
+    cash = START_CASH
+
+    for ticker in tickers:
+        print(f"\n=== {ticker} ===")
+        df = get_prices(conn, ticker, start_date, end_date)
+        if df.empty: continue
+        df = add_indicators(df)
+        for idx, row in df.iterrows():
+            # Quantitative filter (e.g., RSI<30)
+            if row["rsi_14"] < 30:
+                # News/GPT filter
+                # TODO: fetch real headlines for the date
+                reason = categorize_drop_reason([])  # Pass headlines here
+                # Track filter stats
+                filter_stats.setdefault(reason, 0)
+                filter_stats[reason] += 1
+                if reason not in ALLOWED_REASONS:
+                    continue
+                # Simulate trade
+                trade = simulate_trade(row, df)
+                if not trade: continue
+                trade.update({
+                    "ticker": ticker,
+                    "signal_date": row["date"],
+                    "rsi_14": row["rsi_14"],
+                    "reason": reason
+                })
+                cash += trade["pl"]
+                stats.append(trade)
+                print(f"{row['date']}: BUY {ticker} {trade['entry_price']:.2f} → {trade['exit_price']:.2f} {trade['result']} (PL: {trade['pl']:.2f}) [{reason}]")
+    conn.close()
+
+    # --- Summary ---
+    n = len(stats)
+    n_win = sum(1 for t in stats if t["result"]=="TP")
+    win_rate = n_win / n if n else 0
+    final_pl = cash - START_CASH
+    print("\n==== SUMMARY ====")
+    print(f"Total trades: {n}")
+    print(f"Win rate (TP): {win_rate:.2%}")
+    print(f"Final P/L: {final_pl:.0f} yen")
+    print("News categorization filter stats (signals that passed quant filter):")
+    for reason, count in filter_stats.items():
+        pass_count = sum(1 for t in stats if t["reason"]==reason)
+        print(f"  {reason}: {count} (trades executed: {pass_count})")
+
+    return stats
+
+if __name__ == "__main__":
+    run_backtest(["7203", "9984", "3436"], "2023-01-01", "2024-01-01")
+
+
+backtest/backtest_engine.py
+"""
+PJ Fire — Unified Backtest Engine (with full daily stats and reporting)
+"""
+
+import os
+import pandas as pd
+from datetime import datetime
+from simulation.db_utils import get_conn
+from simulation.screening import screen_stocks
+from simulation.reasoning import attach_reason_to_candidates
+from simulation.ranker import get_top_signals_for_day
+from simulation.simulation_engine import simulate_trade_for_backtest, init_simulation_db, get_cash
+
+DB_FILE = "backtest/backtest_bt.db"
+START_DATE = "2024-01-01"
+END_DATE = "2024-05-24"
+START_CASH = 1_000_000
+
+def run_backtest_engine(start_date=START_DATE, end_date=END_DATE, start_cash=START_CASH):
+    conn = get_conn(DB_FILE)
+    init_simulation_db()
+    all_dates = pd.date_range(start=start_date, end=end_date, freq='B')
+    trade_log = []
+    daily_stats = []
+    last_cash = start_cash
+
+    for date in all_dates:
+        date_str = date.strftime("%Y-%m-%d")
+        print(f"\n=== {date_str} ===")
+        candidates = screen_stocks(conn, date_str)
+        if not candidates:
+            print("No candidates for this day.")
+            daily_stats.append({"date": date_str, "n_trades": 0, "n_win": 0, "n_loss": 0, "n_other": 0, "day_pl": 0, "cash": last_cash})
+            continue
+        candidates_with_reasons = attach_reason_to_candidates(conn, candidates)
+        if not candidates_with_reasons:
+            print("No candidates passed reasoning filter.")
+            daily_stats.append({"date": date_str, "n_trades": 0, "n_win": 0, "n_loss": 0, "n_other": 0, "day_pl": 0, "cash": last_cash})
+            continue
+        top_signals = get_top_signals_for_day(candidates_with_reasons)
+        if not top_signals:
+            print("No signals above threshold.")
+            daily_stats.append({"date": date_str, "n_trades": 0, "n_win": 0, "n_loss": 0, "n_other": 0, "day_pl": 0, "cash": last_cash})
+            continue
+
+        n_win, n_loss, n_other = 0, 0, 0
+        day_pl = 0
+        for sig in top_signals:
+            result, pl = simulate_trade_for_backtest(conn, sig, date_str, return_result=True)
+            trade_log.append({**sig, "date": date_str, "result": result, "pl": pl})
+            if result == "TP":
+                n_win += 1
+            elif result == "SL":
+                n_loss += 1
+            else:
+                n_other += 1
+            day_pl += pl
+        last_cash = get_cash(conn)
+        daily_stats.append({
+            "date": date_str, "n_trades": len(top_signals),
+            "n_win": n_win, "n_loss": n_loss, "n_other": n_other,
+            "day_pl": day_pl, "cash": last_cash
+        })
+
+    conn.close()
+
+    # === End of backtest summary ===
+    n_trades = sum(d["n_trades"] for d in daily_stats)
+    n_win = sum(d["n_win"] for d in daily_stats)
+    n_loss = sum(d["n_loss"] for d in daily_stats)
+    win_rate = n_win / n_trades if n_trades else 0
+    final_cash = daily_stats[-1]["cash"] if daily_stats else start_cash
+    final_pl = final_cash - start_cash
+
+    print("\n==== BACKTEST SUMMARY ====")
+    print(f"Total trades: {n_trades}")
+    print(f"Win rate (TP): {win_rate:.2%}")
+    print(f"Final P/L: {final_pl:.0f} yen")
+    print(f"Ending cash: {final_cash:,.0f} yen")
+    print("\nFirst 5 daily stats:")
+    print(pd.DataFrame(daily_stats).head())
+    print("\nFirst 5 trades:")
+    print(pd.DataFrame(trade_log).head())
+
+    return daily_stats, trade_log
+
+if __name__ == "__main__":
+    run_backtest_engine()
+
+
+config/config.py
+"""
+PJ Fire — Centralized Configuration Module
+
+- All constants, thresholds, and settings for the entire PJ Fire system.
+- No business logic or side effects. Import in all modules as needed.
+- Sensitive information should be managed via environment variables (.env).
+
+Author: [Your Name]
+Updated: [YYYY-MM-DD]
+"""
+
+import os
+from dotenv import load_dotenv
+
+load_dotenv()  # Ensures .env values are loaded
+
+# === API KEYS & SECRETS ===
+OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY")
+JQUANTS_EMAIL      = os.getenv("JQUANTS_EMAIL")
+JQUANTS_PASSWORD   = os.getenv("JQUANTS_PASSWORD")
+
+# === J-Quants API Endpoints ===
+JQUANTS_BASE_URL           = "https://api.jquants.com/v1"
+JQUANTS_DAILY_QUOTES       = f"{JQUANTS_BASE_URL}/prices/daily_quotes"
+JQUANTS_STATEMENTS         = f"{JQUANTS_BASE_URL}/fins/statements"
+JQUANTS_LISTED_INFO        = f"{JQUANTS_BASE_URL}/listed/info"
+
+# === DATABASE FILES ===
+SIM_DB_PATH   = "db/pj_fire.db"
+BT_DB_PATH    = "backtest/backtest.db"
+
+# === SIMULATION SETTINGS ===
+DEFAULT_LOT_SIZE          = 100      # Default shares per trade
+MIN_TRADE_AMOUNT          = 10000    # Minimum yen per trade (example)
+FORCED_EXIT_THRESHOLD     = 0.07     # 7% (example, adjust to match project rules)
+DRAWDOWN_REDUCE_SIZE      = 0.05     # Reduce trade size after 5% drawdown
+DRAWDOWN_STOP_THRESHOLD   = 0.10     # Stop trading after 10% drawdown
+
+# === STRATEGY FILTERS ===
+MIN_PRICE_DROP_PCT        = 0.03     # Minimum price drop (example: 3%)
+MAX_MACRO_DROP_PCT        = 0.06     # Macro/sector drop exclusion (example: 6%)
+REQUIRED_FY_ONLY          = True     # Use full fiscal year only for fundamentals
+
+# === EXIT RULES ===
+TAKE_PROFIT_PCT           = 0.05     # Example: 5% target
+STOP_LOSS_PCT             = -0.05    # Example: -5% stop loss
+
+# === SCHEDULING / AUTOMATION ===
+DAILY_SIGNAL_TIME         = "08:45"  # JST, example for LINE delivery
+WEEKLY_REPORT_DAY         = "FRI"    # Weekly summary trigger
+
+# === OTHER CONSTANTS ===
+PROJECT_NAME              = "PJ Fire"
+LINE_BOT_NAME             = "PJ Fire シミュレータ"
+VERSION                   = "1.0.0"
+
+# === PATHS ===
+LOG_PATH                  = "logs/pj_fire.log"
+
+# === GPT SETTINGS ===
+GPT_MODEL                 = "gpt-4o"        # Confirmed by user
+REASONING_CATEGORY_LABELS = [
+    "Misinterpreted news",    # Score high
+    "Slightly bad news",      # Score low
+    "Very bad news",          # Exclude
+    "Unknown / no news",      # Core signal
+    "Macro/sector drop",      # Exclude
+]
+
+# === UX SETTINGS ===
+LINE_RICH_MENU_STYLE       = "compact"
+LINE_LANGUAGE              = "ja"
+UI_THEME                   = "light"
+
+# === SAFETY / GUARDRAILS ===
+MAX_SIGNAL_PER_DAY         = 5        # To avoid overtrading for users
+
+# === Add new constants below as needed. ===
+
+
+simulation/config.py
+"""
+Central config for PJ Fire simulation and backtest.
+Edit these values for threshold and rule changes.
+"""
+
+DEFAULT_CASH = 1_000_000
+DEFAULT_LOT_SIZE = 100
+FORCED_EXIT_THRESHOLD = 0.10  # 10% higher score triggers forced exit
+TRADE_LOG_TABLE = "sim_trades"
+PORTFOLIO_TABLE = "sim_portfolio"
+DB_FILE = "simulation/sim.db"
+
+
+simulation/db_utils.py
+
+import sqlite3
+import pandas as pd
+
+def get_conn(db_path):
+    """Open a SQLite connection for the specified DB path."""
+    return sqlite3.connect(db_path)
+
+def init_pjfire_tables(conn):
+    """Create all unified schema tables if they do not exist."""
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS prices (
+            ticker TEXT,
+            date TEXT,
+            open REAL,
+            high REAL,
+            low REAL,
+            close REAL,
+            volume INTEGER,
+            PRIMARY KEY (ticker, date)
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS fundamentals (
+            ticker TEXT,
+            fiscal_year TEXT,
+            revenue REAL,
+            eps REAL,
+            profit REAL,
+            PRIMARY KEY (ticker, fiscal_year)
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS portfolio (
+            ticker TEXT,
+            entry_date TEXT,
+            quantity INTEGER,
+            entry_price REAL,
+            status TEXT,
+            strategy TEXT,
+            PRIMARY KEY (ticker, entry_date)
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS trades (
+            trade_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            datetime TEXT,
+            ticker TEXT,
+            quantity INTEGER,
+            price REAL,
+            trade_type TEXT,
+            strategy TEXT,
+            reason TEXT
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS cash (
+            as_of TEXT PRIMARY KEY,
+            balance REAL
+        )
+    """)
+    conn.commit()
+
+def insert_prices(conn, df):
+    """Insert a DataFrame of daily prices into the unified prices table."""
+    df.to_sql("prices", conn, if_exists="append", index=False)
+
+def insert_fundamentals(conn, df):
+    """Insert a DataFrame of annual fundamentals into the unified fundamentals table."""
+    df.to_sql("fundamentals", conn, if_exists="append", index=False)
+
+def get_prices(conn, ticker, start_date=None, end_date=None):
+    """Fetch daily prices for a ticker and optional date range."""
+    query = "SELECT * FROM prices WHERE ticker = ?"
+    params = [ticker]
+    if start_date and end_date:
+        query += " AND date BETWEEN ? AND ?"
+        params += [start_date, end_date]
+    return pd.read_sql(query, conn, params=params)
+
+def get_fundamentals(conn, ticker, period_type="FY", n=5):
+    """
+    Fetches up to n most recent fundamentals for a given ticker and period type.
+    period_type: "FY" (annual) or "1Q"/"2Q"/"3Q"/"4Q" (quarterly)
+    """
+    query = """
+    SELECT * FROM fundamentals
+    WHERE ticker = ?
+    AND TypeOfCurrentPeriod = ?
+    ORDER BY fiscal_year DESC, CurrentPeriodEndDate DESC
+    LIMIT ?
+    """
+    df = pd.read_sql(query, conn, params=[ticker, period_type, n])
+    return df
+
+def get_quarterly_fundamentals(conn, ticker, n=4):
+    """
+    Fetches up to n most recent quarterly (Q1–Q4) reports for a given ticker.
+    """
+    query = """
+    SELECT * FROM fundamentals
+    WHERE ticker = ?
+    AND TypeOfCurrentPeriod IN ('1Q', '2Q', '3Q', '4Q')
+    ORDER BY CurrentPeriodEndDate DESC
+    LIMIT ?
+    """
+    df = pd.read_sql(query, conn, params=[ticker, n])
+    return df
+
+simulation/fetch_news.py
+
+import os
+import sqlite3
+import pandas as pd
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
+from googleapiclient.discovery import build
+import time
+import re
+
+# --- CONFIG ---
+load_dotenv()
+# DB_FILE and CACHE_TABLE must be set by the caller or default
+DB_FILE = os.getenv("PJ_FIRE_DB", "simulation/pjfire.db")
+CACHE_TABLE = os.getenv("PJ_FIRE_NEWS_CACHE", "news_cache")
+VARIANT_CSV = os.getenv("PJ_FIRE_VARIANT_CSV", "pjfire_topix_company_patterns_filtered.csv")
+
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
+MAX_RESULTS = 10
+
+ALLOWED_DOMAINS = [
+    "nikkei.com", "kabutan.jp", "bloomberg.co.jp", "reuters.com",
+    "irbank.net", "minkabu.jp", "moneyworld.jp", "fisco.jp"
+]
+JUNK_DOMAINS = [
+    "facebook.com", "twitter.com", "x.com", "instagram.com",
+    "wikipedia.org", "linkedin.com", "youtube.com", "ameblo.jp",
+    "note.com", "shop", "rakuten.co.jp", "amazon.co.jp"
+]
+JUNK_URL_PATTERNS = [
+    "/wiki/", "/mypage/", "/profile/", "/about/", "/support/", "/blog/", "/career/", "/job/", "/shop/", "/event/", "/guide/", "/faq", "/posts/", "/users/", "/account/", "/company/", "/news/all/", "/ir/", "/corp/"
+]
+
+SIGNAL_KEYWORDS = [
+    "下方修正", "上方修正", "買収", "合併", "子会社化", "不正", "訴訟", "監査", "粉飾",
+    "大幅減益", "黒字転換", "赤字転落", "新製品", "新サービス", "サービス開始",
+    "製品発表", "新規事業", "事業撤退", "生産停止", "販売停止", "リコール", "不祥事",
+    "人事異動", "退任", "新任", "大型契約", "受注", "資本提携", "株式交換", "TOB",
+    "公募増資", "第三者割当増資", "ストックオプション"
+]
+BONUS_KEYWORDS = [
+    "決算発表", "株主総会", "新規上場", "M&A", "業務提携", "IR発表", "開発成功",
+    "認可取得", "配当金", "新商品", "リニューアル", "役員報酬", "資本業務提携", "開示",
+    "役員変更", "市場変更", "公募増資", "資本提携", "IR", "株式分割"
+]
+JUNK_KEYWORDS = [
+    "ADRランキング", "ADR", "出来高ランキング", "売買高ランキング", "売買代金ランキング",
+    "PTS", "注目銘柄", "個別銘柄", "上昇銘柄", "動き", "出来高上位", "PBR", "PER", "時価総額",
+    "株価チャート", "理論株価", "目標株価", "掲示板", "株予報", "信用残", "時系列", "株価データ",
+    "レーティング", "トレンド", "株価", "株式", "チャート", "株価情報", "株式情報",
+    "日々株価", "週間株価", "年間株価", "四本値推移", "取引情報", "株式掲示板", "SBI証券",
+    "マネックス証券", "楽天証券", "証券会社", "株式ニュース", "銘柄情報", "会社情報",
+    "アセットアライブ", "株価・配当", "ピックアップ", "株価ヒストリー", "過去10年間",
+    "過去1か月", "株価指数", "指標", "モーニングスター", "ストップ高", "ストップ安",
+    "高値更新", "安値更新", "中途採用", "求人", "企業概要", "株価時系列", "転職",
+    "企業情報", "就職", "就活", "公式サイト",
+    "Stock Price & Latest News"
+]
+LOW_QUALITY_PATTERNS = [
+    "ランキング", "予想", "株主", "配当", "IRバンク", "MINKABU", "株探", "PR TIMES",
+    "チャート", "株価", "日々株価", "週間株価", "年間株価", "株価予想", "株価情報",
+    "株式情報", "株予報", "四本値推移", "配当情報", "会社概要", "証券コード", "株式指標", "優待",
+    "時系列", "株式分割", "過去10年間", "過去1か月", "個人投資家", "ピックアップ", "主要株主",
+    "株価データ", "株主総会", "銘柄情報", "ニュース一覧", "情報", "IR情報", "四季報"
+]
+
+def strip_trailing_zero(code):
+    code = str(code)
+    if len(code) == 5 and code.endswith("0"):
+        return code[:-1]
+    return code
+
+def halfwidth_to_fullwidth(s):
+    return ''.join(chr(ord(c) + 0xFEE0) if c.isdigit() else c for c in str(s))
+
+# --- LOAD VARIANTS TABLE ---
+variant_df = pd.read_csv(VARIANT_CSV, dtype=str)
+variant_df["ticker"] = variant_df["ticker"].apply(strip_trailing_zero)
+TICKER_TO_VARIANTS = {
+    row["ticker"]: [v.strip() for v in str(row["variants"]).split(" / ")
+                    if v.strip() and not v.strip().isdigit()]
+    for _, row in variant_df.iterrows()
+}
+
+def is_allowed_domain(url):
+    return any(dom in url for dom in ALLOWED_DOMAINS)
+
+def is_junk_domain(url):
+    return any(dom in url for dom in JUNK_DOMAINS)
+
+def is_junk_url(url):
+    return any(pat in url for pat in JUNK_URL_PATTERNS)
+
+def is_junk_headline(text):
+    generic = ["公式サイト", "マイページ", "会社概要", "プロフィール", "お問い合わせ", "サポート", "コーポレート", "求人", "採用情報"]
+    if any(word in text for word in generic):
+        return True
+    if "掲示板" in text or "ADRランキング" in text:
+        return True
+    if re.fullmatch(r"[A-Za-z0-9\-_/ ]+", text):
+        return True
+    if re.fullmatch(r"\d{4,6}", text):
+        return True
+    if len(text) < 10 and not any(w in text for w in SIGNAL_KEYWORDS + BONUS_KEYWORDS):
+        return True
+    return False
+
+def mentions_wrong_company(text, search_terms):
+    return not any(v in text for v in search_terms)
+
+def score_headline(text, url, search_terms):
+    score = 0
+    if any(term in text for term in SIGNAL_KEYWORDS):
+        score += 5
+    if any(term in text for term in BONUS_KEYWORDS):
+        score += 3
+    if any(domain in url for domain in ALLOWED_DOMAINS):
+        score += 2
+    if any(v in text for v in search_terms):
+        score += 1
+    if any(term in text for term in JUNK_KEYWORDS):
+        score -= 3
+    if is_junk_domain(url) or is_junk_url(url) or is_junk_headline(text):
+        score -= 5
+    if any(term in text for term in LOW_QUALITY_PATTERNS):
+        score -= 1
+    return score
+
+def get_search_terms(ticker, variants):
+    ticker = strip_trailing_zero(ticker)
+    ticker_fw = halfwidth_to_fullwidth(ticker)
+    terms = [ticker, ticker_fw] + [v for v in variants if v not in {ticker, ticker_fw}]
+    return list(dict.fromkeys([t for t in terms if t and len(t) > 1]))
+
+def fetch_news_for_ticker(ticker, signal_date):
+    ticker = strip_trailing_zero(ticker)
+    variants = TICKER_TO_VARIANTS.get(str(ticker), [])
+    search_terms = get_search_terms(ticker, variants)
+    if not search_terms:
+        print(f"[WARN] No search terms for ticker {ticker}.")
+        return "No variants or ticker for news search."
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS {CACHE_TABLE} (
+            ticker TEXT,
+            signal_date TEXT,
+            headlines TEXT,
+            PRIMARY KEY (ticker, signal_date)
+        )
+    """)
+    cursor.execute(f"""
+        SELECT headlines FROM {CACHE_TABLE}
+        WHERE ticker = ? AND signal_date = ?
+    """, (ticker, signal_date))
+    row = cursor.fetchone()
+    if row:
+        conn.close()
+        return row[0]
+
+    try:
+        service = build("customsearch", "v1", developerKey=GOOGLE_API_KEY)
+    except Exception as e:
+        print(f"[ERROR] Google CSE API error: {e}")
+        conn.close()
+        return "No headlines due to Google API error."
+
+    base_date = datetime.strptime(signal_date, "%Y-%m-%d")
+    headlines = []
+
+    for offset in range(-3, 2):  # -3 to +1 inclusive
+        q_date = (base_date + timedelta(days=offset)).strftime("%Y-%m-%d")
+        for term in search_terms:
+            for suffix in ["", " 株", " ニュース"]:
+                query = f'{term}{suffix}'
+                try:
+                    result = service.cse().list(
+                        q=query,
+                        cx=GOOGLE_CSE_ID,
+                        lr="lang_ja",
+                        num=MAX_RESULTS,
+                        sort="date"
+                    ).execute()
+                except Exception as e:
+                    print(f"\u26a0\ufe0f Google CSE failed for {ticker} ({term}) on {q_date}: {e}")
+                    continue
+
+                items = result.get("items", [])
+                for item in items:
+                    title = item.get("title", "")
+                    link = item.get("link", "")
+                    if is_junk_domain(link) or is_junk_url(link) or is_junk_headline(title):
+                        continue
+                    if mentions_wrong_company(title, search_terms):
+                        continue
+                    score = score_headline(title, link, search_terms)
+                    if score > 0 or is_allowed_domain(link):
+                        headlines.append((score, f"- {title} ({link})"))
+                time.sleep(1.0)  # Google API rate limit
+
+    # Deduplicate by headline text
+    seen_titles = set()
+    cleaned = []
+    for s, line in sorted(headlines, reverse=True):
+        title = line.split(" (")[0].replace("- ", "")
+        if title not in seen_titles:
+            cleaned.append((s, line))
+            seen_titles.add(title)
+
+    top_n = [line for _, line in cleaned[:3]]
+    headlines_str = "\n".join(top_n) if top_n else "No high-quality headlines found."
+
+    cursor.execute(f"""
+        INSERT OR REPLACE INTO {CACHE_TABLE} (ticker, signal_date, headlines)
+        VALUES (?, ?, ?)
+    """, (ticker, signal_date, headlines_str))
+    conn.commit()
+    conn.close()
+
+    return headlines_str
+
+# --- Test loop ---
+if __name__ == "__main__":
+    test_cases = [
+        ("7203", "2024-05-10"),
+        ("9984", "2024-04-30"),
+        ("3436", "2024-05-09"),
+        ("8058", "2024-03-28"),
+        ("8306", "2024-01-18"),
+        ("9501", "2024-02-13"),
+        ("3769", "2024-04-18"),
+        ("2432", "2024-01-18"),
+        ("7065", "2024-03-08"),
+        ("6758", "2024-05-02"),
+        ("2702", "2024-05-13"),
+        ("4523", "2024-03-07"),
+        ("9022", "2024-04-02"),
+        ("6981", "2024-02-19"),
+    ]
+    for t, d in test_cases:
+        print(f"\n=== {t} {d} ===")
+        headlines = fetch_news_for_ticker(t, d)
+        print(headlines)
+
+
+simulation/fundamental_features.py
+import pandas as pd
+import numpy as np
+
+def extract_fy_features(df):
+    """
+    Input: DataFrame of annual FY rows (latest to oldest).
+    Returns: Dict of features.
+    """
+    df = df.sort_values("fiscal_year", ascending=False).reset_index(drop=True)
+    features = {}
+    if len(df) < 2:
+        return {"error": "Not enough FY data"}
+    # Latest and previous year
+    latest = df.iloc[0]
+    prev = df.iloc[1]
+    # Convert to numeric
+    for col in ["revenue", "profit", "eps"]:
+        latest[col] = pd.to_numeric(latest[col], errors="coerce")
+        prev[col] = pd.to_numeric(prev[col], errors="coerce")
+    # Compute YoY
+    features["eps"] = latest["eps"]
+    features["eps_yoy"] = (latest["eps"] - prev["eps"]) / (abs(prev["eps"]) + 1e-8)
+    features["profit"] = latest["profit"]
+    features["profit_yoy"] = (latest["profit"] - prev["profit"]) / (abs(prev["profit"]) + 1e-8)
+    features["revenue"] = latest["revenue"]
+    features["revenue_yoy"] = (latest["revenue"] - prev["revenue"]) / (abs(prev["revenue"]) + 1e-8)
+    # Multi-year trends
+    eps_arr = pd.to_numeric(df["eps"].head(5), errors="coerce").values
+    profit_arr = pd.to_numeric(df["profit"].head(5), errors="coerce").values
+    features["eps_negative_years"] = np.sum(eps_arr < 0)
+    features["profit_down_years"] = np.sum(np.diff(profit_arr) < 0)
+    return features
+
+def extract_ttm_features(df_q):
+    """
+    Input: DataFrame of quarterly rows (latest to oldest).
+    Returns: Dict of TTM features.
+    """
+    ttm = {}
+    for col in ["revenue", "profit", "eps"]:
+        ttm[col+"_ttm"] = pd.to_numeric(df_q[col], errors="coerce").head(4).sum()
+    # Calculate QoQ drops if wanted
+    # e.g., ttm['eps_last_q'] = pd.to_numeric(df_q['eps'], errors='coerce').iloc[0]
+    return ttm
+
+def is_broken_fundamental(fy_features, ttm_features):
+    """
+    Returns True if fundamentals are "broken", otherwise False.
+    Example rules: negative EPS, multi-year profit decline, TTM profit negative, etc.
+    """
+    # Basic hard rules (customize as needed)
+    if fy_features.get("eps_negative_years", 0) >= 2:
+        return True
+    if fy_features.get("profit_down_years", 0) >= 2:
+        return True
+    if fy_features.get("eps", 1e9) < 0:
+        return True
+    if ttm_features and ttm_features.get("profit_ttm", 1e9) < 0:
+        return True
+    return False
+
+simulation/logger.py
+"""
+Logger utility for PJ Fire simulation (and optionally backtest).
+Supports trade/event logging, warnings, and info messages.
+"""
+
+from datetime import datetime
+
+def log_trade(ticker, side, price, qty, score, date, reason=""):
+    print(f"[TRADE] {date} {side} {ticker} {qty}@{price} Score:{score} {reason}")
+
+def log_warning(msg):
+    print(f"[WARN] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ⚠️ {msg}")
+
+def log_info(msg):
+    print(f"[INFO] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ℹ️ {msg}")
+
+simulation/news_reason_gpt.py
+import os
+import openai
+import time
+from dotenv import load_dotenv
+
+# --- CONFIG ---
+load_dotenv()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GPT_MODEL = os.getenv("PJ_FIRE_GPT_MODEL", "gpt-4o")  # default to gpt-4o if not set
+GPT_DELAY_SEC = 1.2
+
+# Your canonical category labels (update as needed)
+REASONING_CATEGORY_LABELS = [
+    "misinterpreted_news",
+    "slightly_bad_news",
+    "very_bad_news",
+    "no_news",
+    "macro_or_sector_drop"
+]
+
+CATEGORY_SCORING = {
+    "misinterpreted_news": 1.2,
+    "slightly_bad_news": 0.7,
+    "very_bad_news": 0.0,
+    "no_news": 1.1,
+    "macro_or_sector_drop": 0.0
+}
+
+def categorize_reason_with_gpt(ticker, date, price_drop_pct, headlines):
+    """
+    Use GPT to categorize the reason for a stock drop.
+    Returns: category string (see REASONING_CATEGORY_LABELS)
+    """
+    openai.api_key = OPENAI_API_KEY
+
+    if isinstance(headlines, str):
+        headlines_text = headlines
+    else:
+        headlines_text = "\n".join([f"- {h}" for h in headlines]) if headlines else "No news found."
+
+    prompt = f"""
+ティッカー: {ticker}
+日付: {date}
+株価下落率: {price_drop_pct:.2f}%
+関連ニュース:
+{headlines_text}
+
+上記の情報をもとに、この株価下落の主な理由を以下のカテゴリから1つだけ選び、そのカテゴリ名のみを出力してください。
+
+1. misinterpreted_news – ニュースがあるが、市場が過剰反応や誤解をした場合
+2. slightly_bad_news – 軽度の悪材料、やや悪い決算やガイダンス
+3. very_bad_news – 明らかに悪材料（粉飾、不正、大幅赤字等）
+4. no_news – 関連ニュースなし。下落理由が不明
+5. macro_or_sector_drop – 市場全体またはセクター要因
+
+カテゴリ名のみ（例: misinterpreted_news）のみ答えてください。余計な説明は不要です。
+"""
+
+    try:
+        response = openai.ChatCompletion.create(
+            model=GPT_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=12,
+            temperature=0,
+        )
+        category = response.choices[0].message["content"].strip()
+        # Validate result
+        if category not in REASONING_CATEGORY_LABELS:
+            print(f"[WARN] Unrecognized GPT category for {ticker} on {date}: '{category}'")
+            return "no_news"
+        return category
+    except Exception as e:
+        print(f"[ERROR] GPT categorization failed for {ticker} on {date}: {e}")
+        return "no_news"
+
+simulation/ranker.py
+
+"""
+ranker.py
+PJ Fire — Final Refactored Version
+
+Responsible for scoring, ranking, and ordering candidate stocks after filtering
+for mean reversion, trend, or other strategies.
+- Imports scoring rules and signal logic
+- Outputs top N tickers, scores, and reasons for downstream modules
+- All scoring and ranking rules are parameterized
+"""
+
+import pandas as pd
+from typing import List, Dict, Any
+
+# --- Scoring Weights and Criteria (Move to config.py if needed) ---
+WEIGHTS = {
+    'price_drop_pct': 3.0,
+    'gpt_reason_score': 2.0,
+    'fundamental_strength': 1.5,
+    'volume_spike': 1.0,
+    # Add others as needed
+}
+
+SCORE_CUTOFF = 0.0  # Minimum score to be considered
+TOP_N = 10           # Number of tickers to return
+
+
+def score_candidate(c: Dict[str, Any]) -> float:
+    """
+    Compute composite score for a candidate stock.
+    - c: Dict containing keys such as price_drop_pct, gpt_reason_score, fundamental_strength, etc.
+    """
+    score = 0.0
+    for k, w in WEIGHTS.items():
+        v = c.get(k, 0)
+        score += w * v
+    return round(score, 3)
+
+
+def rank_candidates(candidates: List[Dict[str, Any]], top_n=TOP_N) -> List[Dict[str, Any]]:
+    """
+    Scores and ranks the candidate stocks.
+    Returns the top N ranked stocks as a list of dicts, sorted by descending score.
+    """
+    for c in candidates:
+        c['score'] = score_candidate(c)
+    # Optional: filter out below-cutoff
+    filtered = [c for c in candidates if c['score'] >= SCORE_CUTOFF]
+    # Sort and return top N
+    ranked = sorted(filtered, key=lambda x: x['score'], reverse=True)[:top_n]
+    return ranked
+
+
+def get_top_signals_for_day(candidates: List[Dict[str, Any]], strategy: str = 'mean_reversion') -> List[Dict[str, Any]]:
+    """
+    Main entry point: given a list of dicts (candidates with features),
+    returns the top signals to execute for the day.
+    Optionally filters by strategy if needed.
+    """
+    # Example: for now, just call rank_candidates
+    # In future, strategy-specific filtering/scoring goes here
+    return rank_candidates(candidates, top_n=TOP_N)
+
+
+if __name__ == "__main__":
+    # Simple test/demo
+    test_candidates = [
+        {'ticker': '7203', 'price_drop_pct': -0.07, 'gpt_reason_score': 1, 'fundamental_strength': 0.8, 'volume_spike': 1},
+        {'ticker': '9984', 'price_drop_pct': -0.15, 'gpt_reason_score': 2, 'fundamental_strength': 0.9, 'volume_spike': 0},
+        {'ticker': '8058', 'price_drop_pct': -0.03, 'gpt_reason_score': 0.5, 'fundamental_strength': 0.5, 'volume_spike': 1},
+    ]
+    results = get_top_signals_for_day(test_candidates)
+    for r in results:
+        print(r)
+
+simulation/reasoning.py
+"""
+PJ Fire — Unified Reasoning Module (Macro/Sector Hybrid, GPT, Fundamentals)
+Classifies/categorizes reason for stock price drops, using:
+- Macro/sector drop logic (ETF or sector mean)
+- GPT-based news analysis
+- Fundamentals (FY, TTM/quarterly)
+- Event-driven checks (earnings, macro, etc.)
+Usable in both simulation and backtest.
+"""
+
+import os
+import pandas as pd
+import time
+from dotenv import load_dotenv
+from simulation.db_utils import get_fundamentals, get_quarterly_fundamentals, get_prices
+from simulation.fundamental_features import extract_fy_features, extract_ttm_features, is_broken_fundamental
+from simulation.fetch_news import fetch_news_for_ticker
+from simulation.news_reason_gpt import categorize_reason_with_gpt, CATEGORY_SCORING
+
+# --- CONFIG ---
+load_dotenv()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GPT_MODEL = os.getenv("PJ_FIRE_GPT_MODEL", "gpt-4o")
+GPT_DELAY_SEC = 1.2
+UNIVERSE_CSV = os.getenv("PJ_FIRE_UNIVERSE_CSV", "pjfire_topix_company_patterns_expanded.csv")
+
+REASONING_CATEGORY_LABELS = [
+    "misinterpreted_news",
+    "slightly_bad_news",
+    "very_bad_news",
+    "no_news",
+    "macro_or_sector_drop"
+]
+
+SECTOR_ETF_MAP = {
+    "食品":      "1617",
+    "エネルギー資源": "1618",
+    "建設・資材":   "1619",
+    "素材・化学":   "1620",
+    "医薬品":     "1621",
+    "自動車・輸送機": "1622",
+    "鉄鋼・非鉄":   "1623",
+    "機械":   "1624",
+    "電機・精密": "1625",
+    "情報通信・サービスその他":   "1626",
+    "電気・ガス":   "1627",
+    "運輸・物流":       "1628",
+    "商社・卸売":       "1629",
+    "小売": "1630",
+    "銀行": "1631",
+    "金融（除く銀行）":     "1632",
+    "不動産":     "1633",
+}
+
+def is_macro_or_sector_drop(conn, ticker, drop_date, price_drop_pct, sector_code=None, market_ticker="1306", sector_etf_map=SECTOR_ETF_MAP):
+    """
+    Returns True if the drop is likely macro/sector-driven (ETF or sector mean).
+    Tries sector ETF first; else falls back to sector mean.
+    """
+    # --- 1. Market ETF (TOPIX: 1306) ---
+    try:
+        market_df = get_prices(conn, market_ticker)
+        m_row = market_df[market_df["date"] == drop_date]
+        if not m_row.empty:
+            market_idx = market_df.index[market_df["date"] == drop_date][0]
+            if market_idx > 0:
+                prev_market_close = market_df.iloc[market_idx-1]["close"]
+                market_return = (m_row.iloc[0]["close"] - prev_market_close) / prev_market_close
+            else:
+                market_return = 0
+        else:
+            market_return = 0
+    except Exception:
+        market_return = 0
+
+    # --- 2. Sector ETF (if mapping provided and ETF exists for sector) ---
+    sector_etf_return = None
+    if sector_etf_map and sector_code and sector_code in sector_etf_map:
+        sector_etf = sector_etf_map[sector_code]
+        try:
+            etf_df = get_prices(conn, sector_etf)
+            etf_row = etf_df[etf_df["date"] == drop_date]
+            if not etf_row.empty:
+                etf_idx = etf_df.index[etf_df["date"] == drop_date][0]
+                if etf_idx > 0:
+                    prev_etf_close = etf_df.iloc[etf_idx-1]["close"]
+                    if prev_etf_close != 0:
+                        sector_etf_return = (etf_row.iloc[0]["close"] - prev_etf_close) / prev_etf_close
+        except Exception:
+            sector_etf_return = None
+
+    # --- 3. Sector mean fallback ---
+    sector_mean_return = None
+    if (sector_etf_return is None) and sector_code:
+        try:
+            universe = pd.read_csv(UNIVERSE_CSV, dtype=str)
+            sector_tickers = universe[universe["sector17"] == sector_code]["ticker"].tolist()
+            returns = []
+            for s in sector_tickers:
+                df = get_prices(conn, s)
+                s_row = df[df["date"] == drop_date]
+                if not s_row.empty:
+                    s_idx = df.index[df["date"] == drop_date][0]
+                    if s_idx > 0:
+                        prev_close = df.iloc[s_idx-1]["close"]
+                        if prev_close != 0:
+                            returns.append((s_row.iloc[0]["close"] - prev_close) / prev_close)
+            if returns:
+                sector_mean_return = sum(returns) / len(returns)
+        except Exception:
+            sector_mean_return = None
+
+    # --- 4. Decision logic: macro or sector-driven? ---
+    # If drop matches (within 1.5x) *any* of market, sector ETF, or sector mean, treat as sector/macro-driven
+    for ref_return in [market_return, sector_etf_return, sector_mean_return]:
+        if ref_return is not None:
+            if abs(price_drop_pct - ref_return) < 0.015:
+                return True
+            if price_drop_pct < 0 and abs(price_drop_pct) < abs(ref_return) * 1.5:
+                return True
+    return False
+
+def categorize_drop_reason(conn, ticker, drop_date, price_drop_pct, sector_code=None, use_gpt=True):
+    """
+    Returns:
+      reason_category: e.g. "misinterpreted_news", "very_bad_news", etc.
+      explanation: str (for logs/display)
+      fy_features: dict
+      ttm_features: dict
+      headlines: str
+    """
+    # --- Macro/Sector check (before anything else!) ---
+    if is_macro_or_sector_drop(conn, ticker, drop_date, price_drop_pct, sector_code=sector_code):
+        return "macro_or_sector_drop", "Drop matches market/sector move.", {}, {}, ""
+
+    # --- 1. Fetch news headlines ---
+    headlines = fetch_news_for_ticker(ticker, drop_date)
+    gpt_category = None
+
+    # --- 2. Try GPT-based news categorization ---
+    if use_gpt:
+        gpt_category = categorize_reason_with_gpt(ticker, drop_date, price_drop_pct, headlines)
+        score = CATEGORY_SCORING.get(gpt_category, 0.0)
+        if score == 0.0:
+            explanation = f"[EXCLUDED] {ticker} {drop_date} due to GPT category: {gpt_category}"
+            return gpt_category, explanation, {}, {}, headlines
+
+    # --- 3. Fundamentals: FY + Quarterly/TTM ---
+    df_fy = get_fundamentals(conn, ticker, period_type="FY", n=5)
+    df_q = get_quarterly_fundamentals(conn, ticker, n=4)
+    fy_feat = extract_fy_features(df_fy) if not df_fy.empty else {}
+    ttm_feat = extract_ttm_features(df_q) if not df_q.empty else {}
+
+    # --- 4. Event-driven? (drop coincides with new FY/quarter disclosure) ---
+    event_driven = False
+    event_detail = ""
+    if not df_fy.empty:
+        try:
+            last_fy_disclose = pd.to_datetime(df_fy.iloc[0]["CurrentPeriodEndDate"])
+            if abs((pd.to_datetime(drop_date) - last_fy_disclose).days) <= 2:
+                event_driven = True
+                event_detail = f"Drop within 2 days of annual earnings ({last_fy_disclose.date()})"
+        except Exception: pass
+    if not df_q.empty:
+        try:
+            last_q_disclose = pd.to_datetime(df_q.iloc[0]["CurrentPeriodEndDate"])
+            if abs((pd.to_datetime(drop_date) - last_q_disclose).days) <= 2:
+                event_driven = True
+                event_detail = f"Drop within 2 days of quarterly earnings ({last_q_disclose.date()})"
+        except Exception: pass
+
+    # --- 5. Broken fundamental? ---
+    broken = is_broken_fundamental(fy_feat, ttm_feat)
+
+    # --- 6. Compose reason/explanation ---
+    explanation = ""
+    if gpt_category:
+        explanation = f"GPT reason: {gpt_category}. "
+    if event_driven and broken:
+        reason = "fundamental-driven"
+        explanation += (f"{event_detail}. EPS: {fy_feat.get('eps','?')}, EPS YoY: {fy_feat.get('eps_yoy','?'):.1%}, "
+                       f"Profit TTM: {ttm_feat.get('profit_ttm','?')}. Broken multi-year trend detected.")
+    elif broken:
+        reason = "broken"
+        explanation += "Stock failed fundamental health checks (negative EPS, profit downtrend, or negative TTM profit)."
+    elif gpt_category:
+        reason = gpt_category
+    else:
+        reason = "technical/unknown"
+        explanation += "No clear fundamental or news reason for this drop."
+
+    return reason, explanation, fy_feat, ttm_feat, headlines
+
+def attach_reason_to_candidates(conn, candidates, use_gpt=True, verbose=False):
+    """
+    For a list of candidate dicts, attaches:
+      - reason_category
+      - reason_explanation
+      - fy_features
+      - ttm_features
+      - headlines
+    Drops candidates with excluded GPT categories (very_bad_news, macro_or_sector_drop, fundamental-driven, broken).
+    Returns filtered & enriched list.
+    """
+    enriched = []
+    for c in candidates:
+        ticker = c["ticker"]
+        date = c["date"]
+        price_drop_pct = c.get("price_drop_pct", 0)
+        sector_code = c.get("sector17", None)
+        # Run the canonical drop reason classifier
+        reason, explanation, fy_feat, ttm_feat, headlines = categorize_drop_reason(
+            conn, ticker, date, price_drop_pct, sector_code=sector_code, use_gpt=use_gpt
+        )
+        # Exclude if reason is a filter-out category
+        if reason in ["very_bad_news", "macro_or_sector_drop", "fundamental-driven", "broken"]:
+            if verbose:
+                print(f"[SKIP] {ticker} {date}: {reason} ({explanation})")
+            continue
+        c["reason_category"] = reason
+        c["reason_explanation"] = explanation
+        c["fy_features"] = fy_feat
+        c["ttm_features"] = ttm_feat
+        c["headlines"] = headlines
+        enriched.append(c)
+        if verbose:
+            print(f"[PASS] {ticker} {date}: {reason} ({explanation})")
+        # Optional: avoid hitting API rate limits
+        if use_gpt:
+            time.sleep(GPT_DELAY_SEC)
+    return enriched
+
+simulation/save_fundamentals.py
+import os
+import json
+import sqlite3
+import requests
+import pandas as pd
+from datetime import datetime
+from dotenv import load_dotenv
+from simulation.db_utils import init_pjfire_tables, insert_fundamentals
+
+load_dotenv()
+
+DB_FILE = os.getenv("PJ_FIRE_DB", "simulation/pjfire.db")
+JQUANTS_EMAIL = os.getenv("JQUANTS_EMAIL")
+JQUANTS_PASSWORD = os.getenv("JQUANTS_PASSWORD")
+
+# === CONFIG ===
+TICKER_CSV = "pjfire_topix_company_patterns_filtered.csv"   # Use latest TOPIX ticker/metadata CSV
+
+def get_id_token():
+    auth_url = "https://api.jquants.com/v1/token/auth_user"
+    refresh_url = "https://api.jquants.com/v1/token/auth_refresh"
+    try:
+        data = {"mailaddress": JQUANTS_EMAIL, "password": JQUANTS_PASSWORD}
+        r = requests.post(auth_url, data=json.dumps(data), headers={"Content-Type": "application/json"})
+        r.raise_for_status()
+        refresh_token = r.json()["refreshToken"]
+        r = requests.post(f"{refresh_url}?refreshtoken={refresh_token}")
+        r.raise_for_status()
+        return r.json()["idToken"]
+    except Exception as e:
+        print(f"[ERROR] Token retrieval failed: {e}")
+        return None
+
+def fetch_fundamentals_by_code(token, code):
+    url = f"https://api.jquants.com/v1/fins/statements?code={code}"
+    headers = {"Authorization": f"Bearer {token}"}
+    r = requests.get(url, headers=headers, timeout=30)
+    r.raise_for_status()
+    return r.json().get("statements", [])
+
+def store_fundamentals(df):
+    conn = sqlite3.connect(DB_FILE)
+    init_pjfire_tables(conn)
+    insert_fundamentals(conn, df)
+    print(f"✅ Saved fundamentals for {df['ticker'].nunique()} tickers.")
+    conn.close()
+
+def fetch_and_save_fundamentals():
+    token = get_id_token()
+    if not token:
+        print("[ERROR] No token, aborting.")
+        return
+
+    if os.path.exists(TICKER_CSV):
+        tickers_df = pd.read_csv(TICKER_CSV, dtype=str)
+        # Use "ticker" as both ticker and stock_code for J-Quants API
+        if "ticker" not in tickers_df.columns:
+            raise ValueError(f"{TICKER_CSV} missing 'ticker' column.")
+        tickers_df["stock_code"] = tickers_df["ticker"]
+    else:
+        raise FileNotFoundError(f"{TICKER_CSV} not found.")
+
+    all_records = []
+    N = len(tickers_df)
+    for idx, row in tickers_df.iterrows():
+        ticker = row["ticker"]
+        code = row["stock_code"]
+        try:
+            records = fetch_fundamentals_by_code(token, code)
+            df = pd.DataFrame(records)
+            if df.empty:
+                print(f"[{idx+1}/{N}] {ticker}: No data")
+                continue
+            df = df[df["TypeOfCurrentPeriod"] == "FY"]  # Only FY (annual) data
+            for col in ["NetSales", "Profit", "EarningsPerShare"]:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            df["ticker"] = ticker
+            df["fiscal_year"] = pd.to_datetime(df["CurrentPeriodEndDate"]).dt.year.astype(str)
+            df = df[["ticker", "fiscal_year", "NetSales", "EarningsPerShare", "Profit"]]
+            df.rename(columns={
+                "NetSales": "revenue",
+                "EarningsPerShare": "eps",
+                "Profit": "profit"
+            }, inplace=True)
+            df.sort_values("fiscal_year", ascending=False, inplace=True)
+            df = df.head(5)  # Change this if you want more/less years
+            all_records.append(df)
+            print(f"[{idx+1}/{N}] {ticker}: OK ({len(df)} years)")
+        except Exception as e:
+            print(f"[{idx+1}/{N}] [WARN] {ticker}: {e}")
+        if (idx+1) % 25 == 0 or idx+1 == N:
+            print(f"[PROGRESS] Processed {idx+1} of {N} tickers...")
+
+    if all_records:
+        combined = pd.concat(all_records, ignore_index=True)
+        store_fundamentals(combined)
+    else:
+        print("⚠️ No fundamentals data collected.")
+
+if __name__ == "__main__":
+    fetch_and_save_fundamentals()
+
+simulation/save_prices.py
+import os
+import requests
+import pandas as pd
+import sqlite3
+import json
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
+import argparse
+from simulation.db_utils import init_pjfire_tables, insert_prices
+
+load_dotenv()
+
+JQUANTS_EMAIL = os.getenv("JQUANTS_EMAIL")
+JQUANTS_PASSWORD = os.getenv("JQUANTS_PASSWORD")
+API_BASE = "https://api.jquants.com"
+DB_FILE = os.getenv("PJ_FIRE_DB", "simulation/pjfire.db")
+TICKER_CSV = "pjfire_topix_company_patterns.csv"
+
+def get_id_token():
+    data = {"mailaddress": JQUANTS_EMAIL, "password": JQUANTS_PASSWORD}
+    r = requests.post(f"{API_BASE}/v1/token/auth_user", data=json.dumps(data), headers={"Content-Type": "application/json"})
+    r.raise_for_status()
+    refresh_token = r.json()["refreshToken"]
+    r = requests.post(f"{API_BASE}/v1/token/auth_refresh?refreshtoken={refresh_token}")
+    r.raise_for_status()
+    return r.json()["idToken"]
+
+def load_topix_tickers(patterns_csv=TICKER_CSV):
+    df = pd.read_csv(patterns_csv, dtype=str)
+    return df["ticker"].tolist()
+
+def fetch_and_save_prices(start_date, end_date, tickers):
+    id_token = get_id_token()
+    headers = {"Authorization": f"Bearer {id_token}"}
+    all_records = []
+    N = len(tickers)
+    print(f"[START] Fetching prices for {N} tickers ({start_date} to {end_date})")
+    for idx, code in enumerate(tickers, 1):
+        url = f"{API_BASE}/v1/prices/daily_quotes?code={code}&from={start_date}&to={end_date}"
+        try:
+            resp = requests.get(url, headers=headers, timeout=30)
+            if not resp.ok:
+                print(f"[{idx}/{N}] [WARN] Failed for {code}: {resp.text}")
+                continue
+            rows = resp.json().get("daily_quotes", [])
+            for r in rows:
+                all_records.append({
+                    "date": r["Date"],
+                    "ticker": r["Code"],
+                    "open": r["Open"],
+                    "high": r["High"],
+                    "low": r["Low"],
+                    "close": r["Close"],
+                    "volume": r["Volume"],
+                })
+            print(f"[{idx}/{N}] {code}: {len(rows)} rows")
+        except Exception as e:
+            print(f"[{idx}/{N}] [ERROR] {code}: {e}")
+        # Print status every 50 tickers
+        if idx % 50 == 0 or idx == N:
+            print(f"[PROGRESS] Processed {idx} of {N} tickers...")
+
+    if all_records:
+        conn = sqlite3.connect(DB_FILE)
+        init_pjfire_tables(conn)
+        df = pd.DataFrame(all_records)
+        insert_prices(conn, df)
+        print(f"[COMPLETE] Saved {len(df)} price records to {DB_FILE}")
+        conn.close()
+    else:
+        print("[COMPLETE] No records to save.")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Save daily or bulk price data for PJ Fire.")
+    parser.add_argument("--start_date", type=str, default=None, help="YYYY-MM-DD for start of date range (defaults to today)")
+    parser.add_argument("--end_date", type=str, default=None, help="YYYY-MM-DD for end of date range (defaults to today)")
+    parser.add_argument("--bulk", action="store_true", help="If set, loads for the last 3 months by default")
+    args = parser.parse_args()
+
+    tickers = load_topix_tickers()
+    today = datetime.now().date()
+    if args.bulk:
+        start_date = (today - timedelta(days=90)).strftime("%Y-%m-%d")
+        end_date = today.strftime("%Y-%m-%d")
+    else:
+        start_date = args.start_date or today.strftime("%Y-%m-%d")
+        end_date = args.end_date or today.strftime("%Y-%m-%d")
+    print(f"[INFO] Loading prices from {start_date} to {end_date} for {len(tickers)} tickers")
+    fetch_and_save_prices(start_date, end_date, tickers)
+    print("[FINISHED]")
+
+simulation/screening.py
+"""
+PJ Fire — Screening Logic (Backtest & Simulation, Macro/Sector-Aware)
+Loads universe from CSV (with sector17), prices from DB, computes technicals, and runs all filters.
+Outputs candidates with sector17 for use in macro/sector reasoning and scoring.
+"""
+
+import os
+import pandas as pd
+from simulation.technical import add_indicators
+from simulation.db_utils import get_conn, get_prices, get_fundamentals, get_quarterly_fundamentals
+from simulation.fundamental_features import extract_fy_features, extract_ttm_features, is_broken_fundamental
+
+# Set CSV path and DB connection
+UNIVERSE_CSV = os.getenv("PJ_FIRE_UNIVERSE_CSV", "pjfire_topix_company_patterns_expanded.csv")
+MIN_VOLUME = 10000           # Volume threshold (change as needed)
+DROP_PCT_THRESHOLD = -0.04   # -4% price drop or more
+RSI_THRESHOLD = 30           # RSI under 30 for signal
+USE_FUNDAMENTAL_FILTER = True
+
+def load_universe():
+    df = pd.read_csv(UNIVERSE_CSV, dtype=str)
+    if "sector17" not in df.columns:
+        raise ValueError("pjfire_topix_company_patterns_expanded.csv must have 'sector17' column")
+    df = df.set_index("ticker")
+    return df
+
+def screen_stocks(conn, date, drop_pct_threshold=DROP_PCT_THRESHOLD, rsi_threshold=RSI_THRESHOLD, min_volume=MIN_VOLUME):
+    """
+    Returns list of candidate dicts for the given date (with sector17 attached).
+    Each dict has: ticker, date, price, price_drop_pct, rsi_14, ma5, ma25, sector17, volume, etc.
+    """
+    universe = load_universe()
+    candidates = []
+    for ticker, meta in universe.iterrows():
+        sector17 = meta["sector17"]
+        df = get_prices(conn, ticker)
+        if df.empty or date not in df["date"].values:
+            continue
+        df = add_indicators(df)
+        row = df[df["date"] == date]
+        if row.empty:
+            continue
+        row = row.iloc[0]
+        # --- Volume filter ---
+        if "volume" not in row or pd.isna(row["volume"]) or float(row["volume"]) < min_volume:
+            continue
+        # Compute price drop % vs prev close
+        idx = df.index[df["date"] == date][0]
+        if idx == 0:
+            continue  # no prev day
+        prev_close = df.iloc[idx-1]["close"]
+        if prev_close == 0:
+            continue
+        price_drop_pct = (row["close"] - prev_close) / prev_close
+        # --- Technical filters ---
+        if price_drop_pct < drop_pct_threshold and row["rsi_14"] < rsi_threshold:
+            # --- Fundamental filter (optional, can be toggled off for testing) ---
+            if USE_FUNDAMENTAL_FILTER:
+                df_fy = get_fundamentals(conn, ticker, period_type="FY", n=5)
+                df_q = get_quarterly_fundamentals(conn, ticker, n=4)
+                fy_feat = extract_fy_features(df_fy) if not df_fy.empty else {}
+                ttm_feat = extract_ttm_features(df_q) if not df_q.empty else {}
+                if is_broken_fundamental(fy_feat, ttm_feat):
+                    continue
+            candidates.append({
+                "ticker": ticker,
+                "sector17": sector17,
+                "date": date,
+                "price": row["close"],
+                "price_drop_pct": price_drop_pct,
+                "rsi_14": row["rsi_14"],
+                "ma5": row["ma5"],
+                "ma25": row["ma25"],
+                "volume": row["volume"],
+                # Add more fields as needed
+            })
+    return candidates
+
+if __name__ == "__main__":
+    # Example usage/test
+    import sqlite3
+    conn = sqlite3.connect("backtest/backtest_bt.db")
+    candidates = screen_stocks(conn, "2024-03-15")
+    print(pd.DataFrame(candidates).head())
+
+
+simulation/simulation_engine.py
+"""
+PJ Fire — Canonical Simulation Engine
+Handles virtual trading, positions, and cash for simulation and backtest.
+- All buy/sell/forced exit logic centralized
+- Logging, portfolio, cash, and trade management
+- Supports both live simulation and batch (backtest) via entrypoints
+"""
+
+import os
+import sqlite3
+import pandas as pd
+from datetime import datetime
+from dotenv import load_dotenv
+from simulation.ranker import get_top_signals_for_day
+from simulation.db_utils import init_pjfire_tables
+
+load_dotenv()
+DB_FILE = os.getenv("PJ_FIRE_DB", "simulation/pjfire.db")
+PORTFOLIO_TABLE = "portfolio"
+TRADE_LOG_TABLE = "trades"
+CASH_TABLE = "cash"
+
+DEFAULT_CASH = 1_000_000
+DEFAULT_LOT_SIZE = 100
+FORCED_EXIT_THRESHOLD = 0.10  # Score delta to trigger forced exit
+
+def init_simulation_db():
+    conn = sqlite3.connect(DB_FILE)
+    init_pjfire_tables(conn)
+    c = conn.cursor()
+    c.execute(f"SELECT COUNT(*) FROM {CASH_TABLE}")
+    count = c.fetchone()[0]
+    if count == 0:
+        now = datetime.now().strftime("%Y-%m-%d")
+        c.execute(f"INSERT INTO {CASH_TABLE} (as_of, balance) VALUES (?, ?)", (now, DEFAULT_CASH))
+        conn.commit()
+    conn.close()
+
+def get_portfolio(conn):
+    return pd.read_sql(f"SELECT * FROM {PORTFOLIO_TABLE} WHERE status = 'open'", conn)
+
+def get_cash(conn):
+    cur = conn.cursor()
+    cur.execute(f"SELECT balance FROM {CASH_TABLE} ORDER BY as_of DESC LIMIT 1")
+    row = cur.fetchone()
+    return float(row[0]) if row else DEFAULT_CASH
+
+def update_cash(conn, amount, as_of_date):
+    cur = conn.cursor()
+    cur.execute(f"INSERT OR REPLACE INTO {CASH_TABLE} (as_of, balance) VALUES (?, ?)", (as_of_date, amount))
+    conn.commit()
+
+def execute_buy(conn, ticker, price, qty, signal_score, date, strategy="main"):
+    cash = get_cash(conn)
+    total_cost = price * qty
+    if cash < total_cost:
+        qty = max(int(cash // price), 0)
+    if qty <= 0:
+        print(f"[SIM] Insufficient cash to buy {ticker}.")
+        return False
+    c = conn.cursor()
+    c.execute(f"""
+        INSERT OR REPLACE INTO {PORTFOLIO_TABLE} (ticker, entry_date, quantity, entry_price, status, strategy, signal_score)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (ticker, date, qty, price, "open", strategy, signal_score))
+    update_cash(conn, cash - (qty * price), date)
+    log_trade(conn, ticker, "BUY", price, qty, signal_score, date, strategy=strategy)
+    print(f"[SIM] Bought {qty}x {ticker} at {price} on {date}.")
+    return True
+
+def execute_sell(conn, ticker, price, date, reason="NormalExit"):
+    c = conn.cursor()
+    c.execute(f"SELECT quantity, entry_price FROM {PORTFOLIO_TABLE} WHERE ticker = ? AND status = 'open'", (ticker,))
+    row = c.fetchone()
+    if not row:
+        print(f"[SIM] No position to sell for {ticker}.")
+        return False
+    qty, entry_price = row
+    cash = get_cash(conn)
+    update_cash(conn, cash + price * qty, date)
+    c.execute(f"UPDATE {PORTFOLIO_TABLE} SET status = 'closed' WHERE ticker = ? AND status = 'open'", (ticker,))
+    log_trade(conn, ticker, "SELL", price, qty, 0, date, reason=reason)
+    print(f"[SIM] Sold {qty}x {ticker} at {price} on {date}. Reason: {reason}")
+    conn.commit()
+    return True
+
+def log_trade(conn, ticker, side, price, qty, signal_score, date, reason="", strategy="main"):
+    cur = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cur.execute(f"""
+        INSERT INTO {TRADE_LOG_TABLE} (datetime, ticker, quantity, price, trade_type, strategy, reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (now, ticker, qty, price, side, strategy, reason))
+    conn.commit()
+
+def forced_exit_logic(conn, ranked_signals):
+    held_df = get_portfolio(conn)
+    for _, held in held_df.iterrows():
+        held_score = held.get("signal_score", 0)
+        ticker = held["ticker"]
+        for s in ranked_signals:
+            if s["score"] > held_score * (1 + FORCED_EXIT_THRESHOLD):
+                print(f"[FORCED EXIT] {ticker} -> {s['ticker']} (score {s['score']:.2f})")
+                execute_sell(conn, ticker, s["price"], s["date"], reason="ForcedExit")
+                execute_buy(conn, s["ticker"], s["price"], DEFAULT_LOT_SIZE, s["score"], s["date"])
+                break
+
+def run_simulation_for_day(candidates, date):
+    """
+    Given pre-scored and filtered candidates, runs buy/sell logic for a single day.
+    """
+    conn = sqlite3.connect(DB_FILE)
+    init_pjfire_tables(conn)
+    # --- 1. Get top signals
+    ranked = get_top_signals_for_day(candidates)
+    print(f"Top signals for {date}:")
+    for sig in ranked:
+        print(sig)
+    # --- 2. Forced exit check
+    forced_exit_logic(conn, ranked)
+    # --- 3. Execute new buys
+    for sig in ranked:
+        execute_buy(conn, sig["ticker"], sig["price"], DEFAULT_LOT_SIZE, sig["score"], date)
+    conn.close()
+
+def simulate_trade_for_backtest(conn, signal, date, return_result=False):
+    """
+    Core trade logic for batch (backtest) mode.
+    Returns (result, pl) for daily stats/tracking.
+    """
+    ticker = signal["ticker"]
+    price = signal["price"]
+    score = signal.get("score", 0)
+    # Implement your real entry/exit logic here.
+    # For now, fake logic as an example:
+    # (You should implement your MA/TP/SL/timeout workflow here.)
+
+    # --- Example: simulate buy/hold/sell over X days ---
+    result = "Timeout"  # Or "TP" or "SL"
+    pl = 0
+    # ...your trade logic to compute result and pl...
+
+    # Actually log the trade in DB as before
+    execute_buy(conn, ticker, price, DEFAULT_LOT_SIZE, score, date)
+    # If an exit occurs, also call execute_sell(...) and compute pl
+
+    if return_result:
+        return result, pl
+
+simulation/technical.py
+"""
+PJ Fire — Technical Indicators
+(Canonical version, used by both simulation and backtest systems)
+"""
+
+import pandas as pd
+
+def calc_rsi(prices, window=14):
+    delta = prices.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(window=window).mean()
+    avg_loss = loss.rolling(window=window).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+def calc_sma(prices, window):
+    return prices.rolling(window=window).mean()
+
+def calc_ema(prices, window):
+    return prices.ewm(span=window, adjust=False).mean()
+
+def calc_macd(prices, fast=12, slow=26, signal=9):
+    ema_fast = calc_ema(prices, fast)
+    ema_slow = calc_ema(prices, slow)
+    macd = ema_fast - ema_slow
+    macd_signal = macd.ewm(span=signal, adjust=False).mean()
+    return macd, macd_signal
+
+def calc_volatility(prices, window=20):
+    return prices.pct_change().rolling(window).std()
+
+def add_indicators(df):
+    # Core indicators
+    df["rsi_14"] = calc_rsi(df["close"], window=14)
+    df["ma5"] = calc_sma(df["close"], window=5)
+    df["ma25"] = calc_sma(df["close"], window=25)
+    # Optional/future: more indicators
+    df["ema12"] = calc_ema(df["close"], window=12)
+    df["ema26"] = calc_ema(df["close"], window=26)
+    df["volatility20"] = calc_volatility(df["close"], window=20)
+    macd, macd_signal = calc_macd(df["close"])
+    df["macd"] = macd
+    df["macd_signal"] = macd_signal
+    return df
+
+tools/generate_topix_patterns.py
+import os
+import requests
+import pandas as pd
+import openai
+import time
+import re
+import json
+from dotenv import load_dotenv
+
+# --- CONFIG ---
+load_dotenv()
+JQUANTS_EMAIL = os.getenv("JQUANTS_EMAIL")
+JQUANTS_PASSWORD = os.getenv("JQUANTS_PASSWORD")
+API_BASE = "https://api.jquants.com"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GPT_MODEL = "gpt-4o"
+GPT_DELAY_SEC = 1.2
+OUT_PATH = "pjfire_topix_company_patterns_filtered.csv"
+
+SUFFIX_ABBREVIATIONS = [
+    ("ホールディングス", "HD"),
+    ("グループ", "G"),
+    ("工業", ""),
+    ("商事", ""),
+    ("不動産", ""),
+    ("物流", ""),
+    ("製作所", ""),
+    ("サービス", ""),
+    ("産業", ""),
+    ("電機", ""),
+    ("銀行", ""),
+    ("証券", ""),
+    ("リース", ""),
+    ("建設", ""),
+    ("製薬", ""),
+]
+
+GENERIC_NOUNS = {
+    "ファミレス", "ステーキ", "飲料", "銀行", "食品", "ゲーム", "証券", "家電", "自動車",
+    "スマホ", "ビール", "医薬品", "電機", "住宅", "不動産", "建設", "化学", "鉄鋼", "通信",
+    "サービス", "メーカー", "業界", "株式", "ニュース"
+}
+
+BAD_PATTERNS = [
+    "申し訳ありません", "情報は持ち合わせていません", "公式ウェブサイト", "お勧めします",
+    "一般的に", "異なることがあります"
+]
+
+PROMPT = """
+日本の金融ニュースやSNSで「{company_name}」（証券コード: {ticker}）を表す固有名詞（略称、ニックネーム、製品名、ブランド名など）を最大10個、日本語で挙げてください。
+一般名詞や業界一般で使われる言葉（例：ファミレス、ステーキ、銀行、食品、家電、ゲーム、株式など）は除外してください。
+固有名詞のみ、会社独自の呼び方やブランド・略称を含めてください。重複・曖昧な語や短縮形でも、会社特有でなければ除外してください。
+回答はカンマ区切りで、例：A, B, C, D
+"""
+
+def halfwidth_to_fullwidth(s):
+    return ''.join(chr(ord(c) + 0xFEE0) if c.isdigit() else c for c in str(s))
+
+def get_id_token():
+    data = {"mailaddress": JQUANTS_EMAIL, "password": JQUANTS_PASSWORD}
+    r = requests.post(f"{API_BASE}/v1/token/auth_user", data=json.dumps(data), headers={"Content-Type": "application/json"})
+    r.raise_for_status()
+    refresh_token = r.json()["refreshToken"]
+    r = requests.post(f"{API_BASE}/v1/token/auth_refresh?refreshtoken={refresh_token}")
+    r.raise_for_status()
+    return r.json()["idToken"]
+
+def fetch_topix_metadata():
+    token = get_id_token()
+    url = f"{API_BASE}/v1/listed/info"
+    headers = {"Authorization": f"Bearer {token}"}
+    resp = requests.get(url, headers=headers)
+    resp.raise_for_status()
+    info = resp.json().get("info", [])
+    df = pd.DataFrame(info)
+    # Filter for TOPIX only
+    df = df[
+        (df["MarketCodeName"] == "プライム") & 
+        (df["ScaleCategory"].str.contains("TOPIX", na=False))
+    ].copy()
+    df["ticker"] = df["Code"].astype(str)
+    df["ticker_fullwidth"] = df["ticker"].apply(halfwidth_to_fullwidth)
+    df = df[["ticker", "ticker_fullwidth", "CompanyName", "Sector17CodeName"]]
+    df.rename(columns={
+        "CompanyName": "company_name",
+        "Sector17CodeName": "sector17"
+    }, inplace=True)
+    return df
+
+def gpt_get_variants(company_name, ticker, client):
+    prompt = PROMPT.format(company_name=company_name, ticker=ticker)
+    try:
+        response = client.chat.completions.create(
+            model=GPT_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=120,
+            temperature=0.2,
+        )
+        result = response.choices[0].message.content
+        return [v.strip() for v in result.split(",") if v.strip()]
+    except Exception as e:
+        print(f"[ERROR] GPT API for {company_name}: {e}")
+        return []
+
+def generate_abbreviations(company_name):
+    abbrs = []
+    for suffix, abbr in SUFFIX_ABBREVIATIONS:
+        if company_name.endswith(suffix):
+            base = company_name[:-len(suffix)]
+            abbrs.append(base)
+            if abbr:
+                abbrs.append(base + abbr)
+    return abbrs
+
+def is_gpt_junk_variant(variant):
+    return any(bad in variant for bad in BAD_PATTERNS)
+
+def clean_variants(variants, ticker, ticker_fullwidth, company_name):
+    filtered = [
+        v for v in variants
+        if v != ticker and v != ticker_fullwidth and v not in GENERIC_NOUNS and len(v) > 1 and not is_gpt_junk_variant(v)
+    ]
+    filtered += generate_abbreviations(company_name)
+    seen = set()
+    deduped = []
+    for v in filtered:
+        if v and v not in seen:
+            deduped.append(v)
+            seen.add(v)
+    return " / ".join(deduped)
+
+def main():
+    print("[STEP 1] Fetching TOPIX metadata from J-Quants...")
+    df = fetch_topix_metadata()
+    print(f"[INFO] Fetched {len(df)} TOPIX stocks.")
+    print("[STEP 2] Expanding company variants with GPT...")
+    openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
+    all_variants = []
+    for i, row in df.iterrows():
+        print(f"Processing: {row['ticker']} {row['company_name']} ({i+1}/{len(df)})")
+        variants = gpt_get_variants(row['company_name'], row['ticker'], openai_client)
+        cleaned = clean_variants(variants, row['ticker'], row['ticker_fullwidth'], row['company_name'])
+        all_variants.append(cleaned)
+        time.sleep(GPT_DELAY_SEC)
+    df["variants"] = all_variants
+    print("[STEP 3] Saving to CSV...")
+    df.to_csv(OUT_PATH, index=False, encoding="utf-8-sig")
+    print(f"[DONE] Saved: {OUT_PATH}")
+    print(df.head(10))
+
+if __name__ == "__main__":
+    main()

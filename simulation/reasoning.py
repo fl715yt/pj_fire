@@ -1,8 +1,8 @@
 """
 PJ Fire — Unified Reasoning Module (Macro/Sector Hybrid, GPT, Fundamentals)
 Classifies/categorizes reason for stock price drops, using:
-- Macro/sector drop logic (ETF or sector mean)
-- GPT-based news analysis
+- Macro/sector drop logic (ETF or sector mean, from config)
+- GPT-based news analysis (category labels, model, and scoring from config)
 - Fundamentals (FY, TTM/quarterly)
 - Event-driven checks (earnings, macro, etc.)
 Usable in both simulation and backtest.
@@ -11,48 +11,24 @@ Usable in both simulation and backtest.
 import os
 import pandas as pd
 import time
-from dotenv import load_dotenv
+from config.config import (
+    REASONING_CATEGORY_LABELS,
+    SECTOR_ETF_MAP,
+    CATEGORY_SCORING,
+    PJ_FIRE_UNIVERSE_CSV,
+    GPT_DELAY_SEC,
+    OPENAI_API_KEY,
+    GPT_MODEL,
+)
 from simulation.db_utils import get_fundamentals, get_quarterly_fundamentals, get_prices
 from simulation.fundamental_features import extract_fy_features, extract_ttm_features, is_broken_fundamental
 from simulation.fetch_news import fetch_news_for_ticker
-from simulation.news_reason_gpt import categorize_reason_with_gpt, CATEGORY_SCORING
+from simulation.news_reason_gpt import categorize_reason_with_gpt
 
-# --- CONFIG ---
-load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-GPT_MODEL = os.getenv("PJ_FIRE_GPT_MODEL", "gpt-4o")
-GPT_DELAY_SEC = 1.2
-UNIVERSE_CSV = os.getenv("PJ_FIRE_UNIVERSE_CSV", "pjfire_topix_company_patterns_expanded.csv")
-
-REASONING_CATEGORY_LABELS = [
-    "misinterpreted_news",
-    "slightly_bad_news",
-    "very_bad_news",
-    "no_news",
-    "macro_or_sector_drop"
-]
-
-SECTOR_ETF_MAP = {
-    "食品":      "1617",
-    "エネルギー資源": "1618",
-    "建設・資材":   "1619",
-    "素材・化学":   "1620",
-    "医薬品":     "1621",
-    "自動車・輸送機": "1622",
-    "鉄鋼・非鉄":   "1623",
-    "機械":   "1624",
-    "電機・精密": "1625",
-    "情報通信・サービスその他":   "1626",
-    "電気・ガス":   "1627",
-    "運輸・物流":       "1628",
-    "商社・卸売":       "1629",
-    "小売": "1630",
-    "銀行": "1631",
-    "金融（除く銀行）":     "1632",
-    "不動産":     "1633",
-}
-
-def is_macro_or_sector_drop(conn, ticker, drop_date, price_drop_pct, sector_code=None, market_ticker="1306", sector_etf_map=SECTOR_ETF_MAP):
+def is_macro_or_sector_drop(
+    conn, ticker, drop_date, price_drop_pct, sector_code=None,
+    market_ticker="1306", sector_etf_map=SECTOR_ETF_MAP
+):
     """
     Returns True if the drop is likely macro/sector-driven (ETF or sector mean).
     Tries sector ETF first; else falls back to sector mean.
@@ -93,7 +69,7 @@ def is_macro_or_sector_drop(conn, ticker, drop_date, price_drop_pct, sector_code
     sector_mean_return = None
     if (sector_etf_return is None) and sector_code:
         try:
-            universe = pd.read_csv(UNIVERSE_CSV, dtype=str)
+            universe = pd.read_csv(PJ_FIRE_UNIVERSE_CSV, dtype=str)
             sector_tickers = universe[universe["sector17"] == sector_code]["ticker"].tolist()
             returns = []
             for s in sector_tickers:
@@ -111,7 +87,6 @@ def is_macro_or_sector_drop(conn, ticker, drop_date, price_drop_pct, sector_code
             sector_mean_return = None
 
     # --- 4. Decision logic: macro or sector-driven? ---
-    # If drop matches (within 1.5x) *any* of market, sector ETF, or sector mean, treat as sector/macro-driven
     for ref_return in [market_return, sector_etf_return, sector_mean_return]:
         if ref_return is not None:
             if abs(price_drop_pct - ref_return) < 0.015:
@@ -156,18 +131,20 @@ def categorize_drop_reason(conn, ticker, drop_date, price_drop_pct, sector_code=
     event_detail = ""
     if not df_fy.empty:
         try:
-            last_fy_disclose = pd.to_datetime(df_fy.iloc[0]["CurrentPeriodEndDate"])
+            last_fy_disclose = pd.to_datetime(df_fy.iloc[0].get("period_end"))
             if abs((pd.to_datetime(drop_date) - last_fy_disclose).days) <= 2:
                 event_driven = True
                 event_detail = f"Drop within 2 days of annual earnings ({last_fy_disclose.date()})"
-        except Exception: pass
+        except Exception:
+            pass
     if not df_q.empty:
         try:
-            last_q_disclose = pd.to_datetime(df_q.iloc[0]["CurrentPeriodEndDate"])
+            last_q_disclose = pd.to_datetime(df_q.iloc[0].get("period_end"))
             if abs((pd.to_datetime(drop_date) - last_q_disclose).days) <= 2:
                 event_driven = True
                 event_detail = f"Drop within 2 days of quarterly earnings ({last_q_disclose.date()})"
-        except Exception: pass
+        except Exception:
+            pass
 
     # --- 5. Broken fundamental? ---
     broken = is_broken_fundamental(fy_feat, ttm_feat)
@@ -179,7 +156,7 @@ def categorize_drop_reason(conn, ticker, drop_date, price_drop_pct, sector_code=
     if event_driven and broken:
         reason = "fundamental-driven"
         explanation += (f"{event_detail}. EPS: {fy_feat.get('eps','?')}, EPS YoY: {fy_feat.get('eps_yoy','?'):.1%}, "
-                       f"Profit TTM: {ttm_feat.get('profit_ttm','?')}. Broken multi-year trend detected.")
+                        f"Profit TTM: {ttm_feat.get('profit_ttm','?')}. Broken multi-year trend detected.")
     elif broken:
         reason = "broken"
         explanation += "Stock failed fundamental health checks (negative EPS, profit downtrend, or negative TTM profit)."

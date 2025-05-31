@@ -1,3 +1,9 @@
+"""
+PJ Fire — Fundamentals Saver (FY + Quarterly, Config-Driven)
+Fetches full-year and quarterly fundamentals from J-Quants and stores to unified DB.
+All paths and thresholds from config.
+"""
+
 import os
 import json
 import sqlite3
@@ -5,16 +11,19 @@ import requests
 import pandas as pd
 from datetime import datetime
 from dotenv import load_dotenv
+from config.config import (
+    SIM_DB_FILE,
+    JQUANTS_EMAIL,
+    JQUANTS_PASSWORD,
+    PJ_FIRE_UNIVERSE_CSV,
+    ENABLE_QUARTERLY_IMPORT,
+)
 from simulation.db_utils import init_pjfire_tables, insert_fundamentals
 
 load_dotenv()
 
-DB_FILE = os.getenv("PJ_FIRE_DB", "simulation/pjfire.db")
-JQUANTS_EMAIL = os.getenv("JQUANTS_EMAIL")
-JQUANTS_PASSWORD = os.getenv("JQUANTS_PASSWORD")
-
 # === CONFIG ===
-TICKER_CSV = "pjfire_topix_company_patterns_filtered.csv"   # Use latest TOPIX ticker/metadata CSV
+TICKER_CSV = PJ_FIRE_UNIVERSE_CSV
 
 def get_id_token():
     auth_url = "https://api.jquants.com/v1/token/auth_user"
@@ -39,7 +48,7 @@ def fetch_fundamentals_by_code(token, code):
     return r.json().get("statements", [])
 
 def store_fundamentals(df):
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(SIM_DB_FILE)
     init_pjfire_tables(conn)
     insert_fundamentals(conn, df)
     print(f"✅ Saved fundamentals for {df['ticker'].nunique()} tickers.")
@@ -71,21 +80,22 @@ def fetch_and_save_fundamentals():
             if df.empty:
                 print(f"[{idx+1}/{N}] {ticker}: No data")
                 continue
-            df = df[df["TypeOfCurrentPeriod"] == "FY"]  # Only FY (annual) data
+            # Import both FY and, if enabled, quarterly data
+            df = df[(df["TypeOfCurrentPeriod"] == "FY") |
+                    (ENABLE_QUARTERLY_IMPORT and df["TypeOfCurrentPeriod"].isin(["1Q", "2Q", "3Q", "4Q"]))]
             for col in ["NetSales", "Profit", "EarningsPerShare"]:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
             df["ticker"] = ticker
-            df["fiscal_year"] = pd.to_datetime(df["CurrentPeriodEndDate"]).dt.year.astype(str)
-            df = df[["ticker", "fiscal_year", "NetSales", "EarningsPerShare", "Profit"]]
+            df["period_type"] = df["TypeOfCurrentPeriod"]
+            df["period_end"] = pd.to_datetime(df["CurrentPeriodEndDate"])
+            df = df[["ticker", "period_type", "period_end", "NetSales", "EarningsPerShare", "Profit"]]
             df.rename(columns={
                 "NetSales": "revenue",
                 "EarningsPerShare": "eps",
                 "Profit": "profit"
             }, inplace=True)
-            df.sort_values("fiscal_year", ascending=False, inplace=True)
-            df = df.head(5)  # Change this if you want more/less years
             all_records.append(df)
-            print(f"[{idx+1}/{N}] {ticker}: OK ({len(df)} years)")
+            print(f"[{idx+1}/{N}] {ticker}: OK ({len(df)} rows)")
         except Exception as e:
             print(f"[{idx+1}/{N}] [WARN] {ticker}: {e}")
         if (idx+1) % 25 == 0 or idx+1 == N:

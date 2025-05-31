@@ -1,6 +1,6 @@
 """
 PJ Fire — Technical Indicators
-(Canonical version, used by both simulation and backtest systems)
+All constants and windows are referenced from config if needed.
 """
 
 import pandas as pd

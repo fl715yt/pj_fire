@@ -1,31 +1,31 @@
 """
-PJ Fire — Canonical Simulation Engine
+PJ Fire — Canonical Simulation Engine (Unified, Config-Driven)
 Handles virtual trading, positions, and cash for simulation and backtest.
 - All buy/sell/forced exit logic centralized
 - Logging, portfolio, cash, and trade management
 - Supports both live simulation and batch (backtest) via entrypoints
 """
 
-import os
-import sqlite3
 import pandas as pd
+import sqlite3
 from datetime import datetime
-from dotenv import load_dotenv
+from config.config import (
+    SIM_DB_FILE, BT_DB_FILE,
+    DEFAULT_CASH, DEFAULT_LOT_SIZE, FORCED_EXIT_THRESHOLD
+)
 from simulation.ranker import get_top_signals_for_day
 from simulation.db_utils import init_pjfire_tables
 
-load_dotenv()
-DB_FILE = os.getenv("PJ_FIRE_DB", "simulation/pjfire.db")
 PORTFOLIO_TABLE = "portfolio"
 TRADE_LOG_TABLE = "trades"
 CASH_TABLE = "cash"
 
-DEFAULT_CASH = 1_000_000
-DEFAULT_LOT_SIZE = 100
-FORCED_EXIT_THRESHOLD = 0.10  # Score delta to trigger forced exit
-
-def init_simulation_db():
-    conn = sqlite3.connect(DB_FILE)
+def init_simulation_db(db_path=SIM_DB_FILE):
+    """
+    Ensures all tables exist and cash is initialized in the chosen DB.
+    Use db_path=BT_DB_FILE for backtest, SIM_DB_FILE for simulation.
+    """
+    conn = sqlite3.connect(db_path)
     init_pjfire_tables(conn)
     c = conn.cursor()
     c.execute(f"SELECT COUNT(*) FROM {CASH_TABLE}")
@@ -105,11 +105,11 @@ def forced_exit_logic(conn, ranked_signals):
                 execute_buy(conn, s["ticker"], s["price"], DEFAULT_LOT_SIZE, s["score"], s["date"])
                 break
 
-def run_simulation_for_day(candidates, date):
+def run_simulation_for_day(candidates, date, db_path=SIM_DB_FILE):
     """
     Given pre-scored and filtered candidates, runs buy/sell logic for a single day.
     """
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(db_path)
     init_pjfire_tables(conn)
     # --- 1. Get top signals
     ranked = get_top_signals_for_day(candidates)
@@ -127,22 +127,17 @@ def simulate_trade_for_backtest(conn, signal, date, return_result=False):
     """
     Core trade logic for batch (backtest) mode.
     Returns (result, pl) for daily stats/tracking.
+    (Add your full MA/TP/SL/timeout workflow as needed.)
     """
     ticker = signal["ticker"]
     price = signal["price"]
     score = signal.get("score", 0)
-    # Implement your real entry/exit logic here.
-    # For now, fake logic as an example:
-    # (You should implement your MA/TP/SL/timeout workflow here.)
-
-    # --- Example: simulate buy/hold/sell over X days ---
-    result = "Timeout"  # Or "TP" or "SL"
+    # Example: Simulate buy, then dummy exit logic (user must customize)
+    result = "Timeout"
     pl = 0
-    # ...your trade logic to compute result and pl...
-
-    # Actually log the trade in DB as before
+    # Log the simulated trade
     execute_buy(conn, ticker, price, DEFAULT_LOT_SIZE, score, date)
-    # If an exit occurs, also call execute_sell(...) and compute pl
+    # Implement real sell/exit workflow in your real system
 
     if return_result:
         return result, pl

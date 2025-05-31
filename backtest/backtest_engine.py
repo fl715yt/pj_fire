@@ -5,20 +5,16 @@ PJ Fire — Unified Backtest Engine (with full daily stats and reporting)
 import os
 import pandas as pd
 from datetime import datetime
+from config.config import BT_DB_FILE, START_CASH, START_DATE, END_DATE  # <- centralize config
 from simulation.db_utils import get_conn
 from simulation.screening import screen_stocks
 from simulation.reasoning import attach_reason_to_candidates
 from simulation.ranker import get_top_signals_for_day
 from simulation.simulation_engine import simulate_trade_for_backtest, init_simulation_db, get_cash
 
-DB_FILE = "backtest/backtest_bt.db"
-START_DATE = "2024-01-01"
-END_DATE = "2024-05-24"
-START_CASH = 1_000_000
-
 def run_backtest_engine(start_date=START_DATE, end_date=END_DATE, start_cash=START_CASH):
-    conn = get_conn(DB_FILE)
-    init_simulation_db()
+    conn = get_conn(BT_DB_FILE)
+    init_simulation_db(BT_DB_FILE)  # Ensure backtest DB is initialized
     all_dates = pd.date_range(start=start_date, end=end_date, freq='B')
     trade_log = []
     daily_stats = []

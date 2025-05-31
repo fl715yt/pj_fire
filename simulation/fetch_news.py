@@ -7,17 +7,15 @@ from googleapiclient.discovery import build
 import time
 import re
 
-# --- CONFIG ---
-load_dotenv()
-# DB_FILE and CACHE_TABLE must be set by the caller or default
-DB_FILE = os.getenv("PJ_FIRE_DB", "simulation/pjfire.db")
-CACHE_TABLE = os.getenv("PJ_FIRE_NEWS_CACHE", "news_cache")
-VARIANT_CSV = os.getenv("PJ_FIRE_VARIANT_CSV", "pjfire_topix_company_patterns_filtered.csv")
+from config.config import (
+    SIM_DB_FILE,
+    VARIANT_CSV,
+    GOOGLE_API_KEY,
+    GOOGLE_CSE_ID,
+    GPT_DELAY_SEC,
+)
 
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
-MAX_RESULTS = 10
-
+# --- News Headline Filtering / Scoring ---
 ALLOWED_DOMAINS = [
     "nikkei.com", "kabutan.jp", "bloomberg.co.jp", "reuters.com",
     "irbank.net", "minkabu.jp", "moneyworld.jp", "fisco.jp"
@@ -140,18 +138,18 @@ def fetch_news_for_ticker(ticker, signal_date):
         print(f"[WARN] No search terms for ticker {ticker}.")
         return "No variants or ticker for news search."
 
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(SIM_DB_FILE)
     cursor = conn.cursor()
-    cursor.execute(f"""
-        CREATE TABLE IF NOT EXISTS {CACHE_TABLE} (
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS news_cache (
             ticker TEXT,
             signal_date TEXT,
             headlines TEXT,
             PRIMARY KEY (ticker, signal_date)
         )
     """)
-    cursor.execute(f"""
-        SELECT headlines FROM {CACHE_TABLE}
+    cursor.execute("""
+        SELECT headlines FROM news_cache
         WHERE ticker = ? AND signal_date = ?
     """, (ticker, signal_date))
     row = cursor.fetchone()
@@ -197,7 +195,7 @@ def fetch_news_for_ticker(ticker, signal_date):
                     score = score_headline(title, link, search_terms)
                     if score > 0 or is_allowed_domain(link):
                         headlines.append((score, f"- {title} ({link})"))
-                time.sleep(1.0)  # Google API rate limit
+                time.sleep(GPT_DELAY_SEC)  # Rate limit by config
 
     # Deduplicate by headline text
     seen_titles = set()
@@ -211,8 +209,8 @@ def fetch_news_for_ticker(ticker, signal_date):
     top_n = [line for _, line in cleaned[:3]]
     headlines_str = "\n".join(top_n) if top_n else "No high-quality headlines found."
 
-    cursor.execute(f"""
-        INSERT OR REPLACE INTO {CACHE_TABLE} (ticker, signal_date, headlines)
+    cursor.execute("""
+        INSERT OR REPLACE INTO news_cache (ticker, signal_date, headlines)
         VALUES (?, ?, ?)
     """, (ticker, signal_date, headlines_str))
     conn.commit()

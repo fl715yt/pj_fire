@@ -5,12 +5,45 @@ Supports trade/event logging, warnings, and info messages.
 """
 
 from datetime import datetime
+import os
+
+try:
+    from config.config import LOG_PATH
+except ImportError:
+    LOG_PATH = None  # fallback
+
+LOG_LEVEL = os.getenv("PJ_FIRE_LOG_LEVEL", "INFO")  # "DEBUG", "INFO", "WARN", "ERROR"
+
+def _timestamp():
+    return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
 def log_trade(ticker, side, price, qty, score, date, reason=""):
-    print(f"[TRADE] {date} {side} {ticker} {qty}@{price} Score:{score} {reason}")
+    msg = f"[TRADE] {date} {side} {ticker} {qty}@{price} Score:{score} {reason}"
+    print(msg)
+    _log_to_file(msg)
 
 def log_warning(msg):
-    print(f"[WARN] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ⚠️ {msg}")
+    text = f"[WARN] {_timestamp()} ⚠️ {msg}"
+    print(text)
+    _log_to_file(text)
 
 def log_info(msg):
-    print(f"[INFO] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ℹ️ {msg}")
+    if LOG_LEVEL in ("DEBUG", "INFO"):
+        text = f"[INFO] {_timestamp()} ℹ️ {msg}"
+        print(text)
+        _log_to_file(text)
+
+def _log_to_file(msg):
+    if LOG_PATH:
+        try:
+            with open(LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(msg + "\n")
+        except Exception:
+            pass  # Fail silently if logging fails
+
+# Optionally add a debug function
+def log_debug(msg):
+    if LOG_LEVEL == "DEBUG":
+        text = f"[DEBUG] {_timestamp()} {msg}"
+        print(text)
+        _log_to_file(text)

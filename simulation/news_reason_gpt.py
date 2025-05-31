@@ -1,30 +1,22 @@
+"""
+PJ Fire — News Reasoning via GPT
+Uses GPT to classify price drop reasons based on headlines, price drop %, and date.
+All category mappings, scoring, and GPT config are centralized via config/config.py.
+"""
+
 import os
 import openai
 import time
 from dotenv import load_dotenv
+from config.config import (
+    OPENAI_API_KEY,
+    GPT_MODEL,
+    GPT_DELAY_SEC,
+    REASONING_CATEGORY_LABELS,
+    CATEGORY_SCORING,
+)
 
-# --- CONFIG ---
 load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-GPT_MODEL = os.getenv("PJ_FIRE_GPT_MODEL", "gpt-4o")  # default to gpt-4o if not set
-GPT_DELAY_SEC = 1.2
-
-# Your canonical category labels (update as needed)
-REASONING_CATEGORY_LABELS = [
-    "misinterpreted_news",
-    "slightly_bad_news",
-    "very_bad_news",
-    "no_news",
-    "macro_or_sector_drop"
-]
-
-CATEGORY_SCORING = {
-    "misinterpreted_news": 1.2,
-    "slightly_bad_news": 0.7,
-    "very_bad_news": 0.0,
-    "no_news": 1.1,
-    "macro_or_sector_drop": 0.0
-}
 
 def categorize_reason_with_gpt(ticker, date, price_drop_pct, headlines):
     """
@@ -35,8 +27,10 @@ def categorize_reason_with_gpt(ticker, date, price_drop_pct, headlines):
 
     if isinstance(headlines, str):
         headlines_text = headlines
-    else:
+    elif isinstance(headlines, list):
         headlines_text = "\n".join([f"- {h}" for h in headlines]) if headlines else "No news found."
+    else:
+        headlines_text = "No news found."
 
     prompt = f"""
 ティッカー: {ticker}
@@ -72,3 +66,7 @@ def categorize_reason_with_gpt(ticker, date, price_drop_pct, headlines):
     except Exception as e:
         print(f"[ERROR] GPT categorization failed for {ticker} on {date}: {e}")
         return "no_news"
+
+# Example usage:
+# cat = categorize_reason_with_gpt("7203", "2024-05-10", -0.07, ["決算悪化で急落", "新規IR発表"])
+# print(cat)

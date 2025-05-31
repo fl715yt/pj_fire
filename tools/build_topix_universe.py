@@ -1,3 +1,14 @@
+"""
+PJ Fire — TOPIX Universe Builder
+
+- Fetches full list of TOPIX stocks from J-Quants.
+- Expands with company names, sector17, and all major aliases (brand/short names).
+- Calls GPT to add Japanese nicknames and variants.
+- Cleans, deduplicates, and outputs the canonical universe CSV for screening and news search.
+- Run regularly to keep ticker universe and news-matching aliases up to date.
+"""
+
+
 import os
 import requests
 import pandas as pd
@@ -15,7 +26,7 @@ API_BASE = "https://api.jquants.com"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GPT_MODEL = "gpt-4o"
 GPT_DELAY_SEC = 1.2
-OUT_PATH = "pjfire_topix_company_patterns_filtered.csv"
+OUT_PATH = "topix_company_list.csv"
 
 SUFFIX_ABBREVIATIONS = [
     ("ホールディングス", "HD"),

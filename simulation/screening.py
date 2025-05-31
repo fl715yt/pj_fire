@@ -7,32 +7,34 @@ Outputs candidates with sector17 for use in macro/sector reasoning and scoring.
 import os
 import pandas as pd
 from simulation.technical import add_indicators
-from simulation.db_utils import get_conn, get_prices, get_fundamentals, get_quarterly_fundamentals
+from simulation.db_utils import get_prices, get_fundamentals, get_quarterly_fundamentals
 from simulation.fundamental_features import extract_fy_features, extract_ttm_features, is_broken_fundamental
 
-# Set CSV path and DB connection
+# --- Configurable Parameters ---
 UNIVERSE_CSV = os.getenv("PJ_FIRE_UNIVERSE_CSV", "pjfire_topix_company_patterns_expanded.csv")
-MIN_VOLUME = 10000           # Volume threshold (change as needed)
+MIN_VOLUME = 10000           # Volume threshold
 DROP_PCT_THRESHOLD = -0.04   # -4% price drop or more
 RSI_THRESHOLD = 30           # RSI under 30 for signal
 USE_FUNDAMENTAL_FILTER = True
 
 def load_universe():
     df = pd.read_csv(UNIVERSE_CSV, dtype=str)
-    if "sector17" not in df.columns:
-        raise ValueError("pjfire_topix_company_patterns_expanded.csv must have 'sector17' column")
+    # Try sector17; fallback to sector or error
+    sector_col = "sector17" if "sector17" in df.columns else ("sector" if "sector" in df.columns else None)
+    if sector_col is None:
+        raise ValueError("Ticker universe CSV must have 'sector17' or 'sector' column.")
     df = df.set_index("ticker")
-    return df
+    return df, sector_col
 
 def screen_stocks(conn, date, drop_pct_threshold=DROP_PCT_THRESHOLD, rsi_threshold=RSI_THRESHOLD, min_volume=MIN_VOLUME):
     """
-    Returns list of candidate dicts for the given date (with sector17 attached).
+    Returns list of candidate dicts for the given date (with sector17/sector attached).
     Each dict has: ticker, date, price, price_drop_pct, rsi_14, ma5, ma25, sector17, volume, etc.
     """
-    universe = load_universe()
+    universe, sector_col = load_universe()
     candidates = []
     for ticker, meta in universe.iterrows():
-        sector17 = meta["sector17"]
+        sector_val = meta[sector_col]
         df = get_prices(conn, ticker)
         if df.empty or date not in df["date"].values:
             continue
@@ -42,10 +44,17 @@ def screen_stocks(conn, date, drop_pct_threshold=DROP_PCT_THRESHOLD, rsi_thresho
             continue
         row = row.iloc[0]
         # --- Volume filter ---
-        if "volume" not in row or pd.isna(row["volume"]) or float(row["volume"]) < min_volume:
+        try:
+            vol = float(row["volume"])
+        except Exception:
+            vol = 0
+        if vol < min_volume:
             continue
         # Compute price drop % vs prev close
-        idx = df.index[df["date"] == date][0]
+        idxs = df.index[df["date"] == date]
+        if len(idxs) == 0:
+            continue
+        idx = idxs[0]
         if idx == 0:
             continue  # no prev day
         prev_close = df.iloc[idx-1]["close"]
@@ -64,20 +73,19 @@ def screen_stocks(conn, date, drop_pct_threshold=DROP_PCT_THRESHOLD, rsi_thresho
                     continue
             candidates.append({
                 "ticker": ticker,
-                "sector17": sector17,
+                sector_col: sector_val,
                 "date": date,
                 "price": row["close"],
                 "price_drop_pct": price_drop_pct,
                 "rsi_14": row["rsi_14"],
                 "ma5": row["ma5"],
                 "ma25": row["ma25"],
-                "volume": row["volume"],
-                # Add more fields as needed
+                "volume": vol,
+                # Add more fields as needed for scoring/GPT
             })
     return candidates
 
 if __name__ == "__main__":
-    # Example usage/test
     import sqlite3
     conn = sqlite3.connect("backtest/backtest_bt.db")
     candidates = screen_stocks(conn, "2024-03-15")
