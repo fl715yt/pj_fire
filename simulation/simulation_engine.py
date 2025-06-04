@@ -11,16 +11,16 @@ import sqlite3
 from datetime import datetime
 from config.config import (
     SIM_DB_FILE, BT_DB_FILE,
-    DEFAULT_CASH, DEFAULT_LOT_SIZE, FORCED_EXIT_THRESHOLD, DRAWDOWN_REDUCE_THRESHOLD, DRAWDOWN_STOP_THRESHOLD
+    DEFAULT_CASH, DEFAULT_LOT_SIZE, FORCED_EXIT_THRESHOLD, DRAWDOWN_REDUCE_THRESHOLD, DRAWDOWN_STOP_THRESHOLD, ENTRY_BUFFER, GAP_DOWN_LIMIT
 )
 from simulation.ranker import get_top_signals_for_day
-from simulation.db_utils import init_pjfire_tables
+from simulation.db_utils import init_pjfire_tables, get_prices
 
 PORTFOLIO_TABLE = "portfolio"
 TRADE_LOG_TABLE = "trades"
 CASH_TABLE = "cash"
 
-def init_simulation_db(db_path=SIM_DB_FILE):
+def init_simulation_db(db_path=SIM_DB_FILE, start_cash=DEFAULT_CASH):
     """
     Ensures all tables exist and cash is initialized in the chosen DB.
     Use db_path=BT_DB_FILE for backtest, SIM_DB_FILE for simulation.
@@ -32,7 +32,7 @@ def init_simulation_db(db_path=SIM_DB_FILE):
     count = c.fetchone()[0]
     if count == 0:
         now = datetime.now().strftime("%Y-%m-%d")
-        c.execute(f"INSERT INTO {CASH_TABLE} (as_of, balance) VALUES (?, ?)", (now, DEFAULT_CASH))
+        c.execute(f"INSERT INTO {CASH_TABLE} (as_of, balance) VALUES (?, ?)", (now, start_cash))
         conn.commit()
     conn.close()
 
@@ -50,13 +50,43 @@ def update_cash(conn, amount, as_of_date):
     cur.execute(f"INSERT OR REPLACE INTO {CASH_TABLE} (as_of, balance) VALUES (?, ?)", (as_of_date, amount))
     conn.commit()
 
+def get_next_day_open(conn, ticker: str, date: str):
+    """Return (next_date, next_open) for ticker after given date, or (None, None)."""
+    df = get_prices(conn, ticker)
+    idxs = df.index[df["date"] == date]
+    if len(idxs) == 0:
+        return None, None
+    idx = idxs[0]
+    if idx >= len(df) - 1:
+        return None, None
+    row = df.iloc[idx + 1]
+    return row["date"], float(row["open"])
+
+def execute_next_day_buy(conn, signal, qty=DEFAULT_LOT_SIZE):
+    """Attempt a next-day entry based on MA5 buffer and gap-down rules."""
+    ticker = signal["ticker"]
+    date = signal["date"]
+    ma5 = signal.get("ma5")
+    close_price = signal.get("price")
+    next_date, next_open = get_next_day_open(conn, ticker, date)
+    if next_date is None:
+        print(f"[SKIP] No next-day price for {ticker} on {date}.")
+        return False, None, None
+    if ma5 is None or pd.isna(ma5):
+        print(f"[SKIP] Missing MA5 for {ticker} on {date}.")
+        return False, next_date, next_open
+    if next_open <= ma5 * (1 - ENTRY_BUFFER) and next_open >= close_price * (1 - GAP_DOWN_LIMIT):
+        executed = execute_buy(conn, ticker, next_open, qty, signal.get("score", 0), next_date)
+        return executed, next_date, next_open
+    print(f"[SKIP] Entry criteria not met for {ticker} on {next_date} (open {next_open}).")
+    return False, next_date, next_open
+
 def execute_buy(conn, ticker, price, qty, signal_score, date, strategy="main"):
     cash = get_cash(conn)
     total_cost = price * qty
     if cash < total_cost:
-        qty = max(int(cash // price), 0)
-    if qty <= 0:
-        print(f"[SIM] Insufficient cash to buy {ticker}.")
+        print(f"[SIM] Insufficient cash to buy {ticker}."
+              f"need {total_cost:.0f}, have {cash:.0f}. Skipping buy.")
         return False
     c = conn.cursor()
     c.execute(f"""
@@ -114,9 +144,9 @@ def forced_exit_logic(conn, ranked_signals):
             if s["score"] > held_score * (1 + FORCED_EXIT_THRESHOLD):
                 print(f"[FORCED EXIT] {ticker} -> {s['ticker']} (score {s['score']:.2f})")
                 execute_sell(conn, ticker, s["price"], s["date"], reason="ForcedExit")
-                lot_size = get_dynamic_lot_size(conn)   # <--- NEW: drawdown-based size
+                lot_size = get_dynamic_lot_size(conn)
                 if lot_size > 0:
-                    execute_buy(conn, s["ticker"], s["price"], lot_size, s["score"], s["date"])
+                    _ = execute_next_day_buy(conn, s, qty=lot_size)
                 else:
                     print("[FORCED EXIT] Trading paused due to drawdown.")
                 break
@@ -134,9 +164,9 @@ def run_simulation_for_day(candidates, date, db_path=SIM_DB_FILE):
         print(sig)
     # --- 2. Forced exit check
     forced_exit_logic(conn, ranked)
-    # --- 3. Execute new buys
+    # --- 3. Execute new buys on next day's open
     for sig in ranked:
-        execute_buy(conn, sig["ticker"], sig["price"], DEFAULT_LOT_SIZE, sig["score"], date)
+        _ = execute_next_day_buy(conn, sig)
     conn.close()
 
 def simulate_trade_for_backtest(conn, signal, date, return_result=False):
@@ -146,14 +176,10 @@ def simulate_trade_for_backtest(conn, signal, date, return_result=False):
     (Add your full MA/TP/SL/timeout workflow as needed.)
     """
     ticker = signal["ticker"]
-    price = signal["price"]
     score = signal.get("score", 0)
-    # Example: Simulate buy, then dummy exit logic (user must customize)
     result = "Timeout"
     pl = 0
-    # Log the simulated trade
-    execute_buy(conn, ticker, price, DEFAULT_LOT_SIZE, score, date)
-    # Implement real sell/exit workflow in your real system
+    executed, entry_date, entry_price = execute_next_day_buy(conn, signal)
 
     if return_result:
-        return result, pl
+        return result, pl, entry_date, entry_price

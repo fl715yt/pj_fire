@@ -52,9 +52,11 @@ MIN_TRADE_AMOUNT           = 10_000         # ¥ — ignore micro signals
 FORCED_EXIT_THRESHOLD      = 0.07           # ≥ 7 % score gap ⇒ forced exit
 TOP_N_RANK                 = 10             # candidates forwarded to signal stage
 MAX_SIGNAL_PER_DAY         = 5              # UX guard-rail
-MIN_VOLUME                 = 10_000         # minimum daily volume for screening
+MIN_VOLUME                 = 50_000         # minimum daily volume for screening
 RSI_THRESHOLD              = 30             # default RSI filter
 DROP_PCT_THRESHOLD         = -0.04          # -4% or worse for drop filter
+ENTRY_BUFFER               = 0.05  
+GAP_DOWN_LIMIT             = 0.02
 USE_FUNDAMENTAL_FILTER = os.getenv("PJ_FIRE_USE_FUNDAMENTAL_FILTER", "1") == "1" ## enable fundamental strength filter
 
 WEIGHTS = {
@@ -86,6 +88,7 @@ DRAWDOWN_STOP_THRESHOLD    = 0.10           # 10 % DD ⇒ pause new trades
 # ----------------------------------------------------------------------
 TAKE_PROFIT_PCT            = 0.05           # +5 % TP
 STOP_LOSS_PCT              = -0.05          # –5 % SL
+MAX_HOLDING_DAYS          = 3             # max days to hold a position
 
 # ----------------------------------------------------------------------
 #  Fundamentals import
@@ -122,6 +125,15 @@ WEEKLY_REPORT_DAY          = "FRI"          # Friday summary
 # ----------------------------------------------------------------------
 GPT_MODEL                  = os.getenv("PJ_FIRE_GPT_MODEL", "gpt-4o")
 GPT_DELAY_SEC              = 1.2
+EXCLUSION_KEYWORDS = [
+    "粉飾", "不正", "会計不正", "虚偽",        # Fraud/accounting
+    "破産", "経営破綻", "倒産",              # Bankruptcy
+    "上場廃止", "監理銘柄", "整理銘柄", "取引停止", # Delisting, halt
+    "訴訟", "調査", "逮捕", "告発", "摘発", "処分", # Legal/compliance
+    "赤字拡大", "債務超過", "無配",           # Financial trouble
+    "社長辞任", "役員辞任", "経営危機",         # Management
+    "重大事故", "大規模リコール", "火災", "爆発", "情報漏洩" # Other events
+]
 REASONING_CATEGORY_LABELS  = [
     "misinterpreted_news",
     "slightly_bad_news",

@@ -12,7 +12,12 @@ from simulation.db_utils import get_conn
 from simulation.screening import screen_stocks
 from simulation.reasoning import attach_reason_to_candidates
 from simulation.ranker import get_top_signals_for_day
-from simulation.simulation_engine import simulate_trade_for_backtest, init_simulation_db, get_cash
+from simulation.simulation_engine import (
+    simulate_trade_for_backtest,
+    init_simulation_db,
+    get_cash,
+    time_exit_logic
+)
 
 def run_backtest_engine(
     start_date=START_DATE, 
@@ -21,7 +26,7 @@ def run_backtest_engine(
     output_dir="backtest/outputs"
 ):
     conn = get_conn(BT_DB_FILE)
-    init_simulation_db(BT_DB_FILE)
+    init_simulation_db(BT_DB_FILE, start_cash)
     all_dates = pd.date_range(start=start_date, end=end_date, freq='B')
     trade_log = []
     daily_stats = []
@@ -52,12 +57,22 @@ def run_backtest_engine(
             daily_stats.append({"date": date_str, "n_trades": 0, "n_win": 0, "n_loss": 0, "n_other": 0, "day_pl": 0, "cash": last_cash})
             equity_curve.append({"date": date_str, "equity": last_cash})
             continue
+        
+        # Close positions held beyond the max holding period
+        time_exit_logic(conn, date_str)
 
         n_win, n_loss, n_other = 0, 0, 0
         day_pl = 0
         for sig in top_signals:
-            result, pl = simulate_trade_for_backtest(conn, sig, date_str, return_result=True)
-            trade_log.append({**sig, "date": date_str, "result": result, "pl": pl})
+            result, pl, entry_date, entry_price = simulate_trade_for_backtest(conn, sig, date_str, return_result=True)
+            trade_log.append({
+                **sig,
+                "signal_date": date_str,
+                "entry_date": entry_date,
+                "entry_price": entry_price,
+                "result": result,
+                "pl": pl,
+            })
             if result == "TP":
                 n_win += 1
             elif result == "SL":

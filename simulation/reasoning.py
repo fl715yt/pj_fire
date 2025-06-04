@@ -19,11 +19,23 @@ from config.config import (
     GPT_DELAY_SEC,
     OPENAI_API_KEY,
     GPT_MODEL,
+    EXCLUSION_KEYWORDS,
 )
 from simulation.db_utils import get_fundamentals, get_quarterly_fundamentals, get_prices
 from simulation.fundamental_features import extract_fy_features, extract_ttm_features, is_broken_fundamental
 from simulation.fetch_news import fetch_news_for_ticker
 from simulation.news_reason_gpt import categorize_reason_with_gpt
+from simulation.logger import log_info
+
+def contains_exclusion_keyword(headlines):
+    """
+    Checks if any exclusion keywords are present in the headlines.
+    Returns True if any keyword is found, False otherwise.
+    """
+    for keyword in EXCLUSION_KEYWORDS:
+        if keyword and keyword in str(headlines):
+            return keyword
+    return None
 
 def is_macro_or_sector_drop(
     conn, ticker, drop_date, price_drop_pct, sector_code=None,
@@ -113,7 +125,14 @@ def categorize_drop_reason(conn, ticker, drop_date, price_drop_pct, sector_code=
     headlines = fetch_news_for_ticker(ticker, drop_date)
     gpt_category = None
 
-    # --- 2. Try GPT-based news categorization ---
+    # --- 2. Pre-GPT exclusion keyword check ---
+    matched_kw = contains_exclusion_keyword(headlines)
+    if matched_kw:
+        explanation = f"[EXCLUDED] {ticker} {drop_date} keyword: {matched_kw}"
+        log_info(explanation)
+        return "excluded", explanation, {}, {}, headlines, False  # << add 'False'
+
+    # --- 3. Try GPT-based news categorization ---
     if use_gpt:
         gpt_category = categorize_reason_with_gpt(ticker, drop_date, price_drop_pct, headlines)
         score = CATEGORY_SCORING.get(gpt_category, 0.0)
@@ -121,13 +140,13 @@ def categorize_drop_reason(conn, ticker, drop_date, price_drop_pct, sector_code=
             explanation = f"[EXCLUDED] {ticker} {drop_date} due to GPT category: {gpt_category}"
             return gpt_category, explanation, {}, {}, headlines, False  # << add 'False'
 
-    # --- 3. Fundamentals: FY + Quarterly/TTM ---
+    # --- 4. Fundamentals: FY + Quarterly/TTM ---
     df_fy = get_fundamentals(conn, ticker, period_type="FY", n=5)
     df_q = get_quarterly_fundamentals(conn, ticker, n=4)
     fy_feat = extract_fy_features(df_fy) if not df_fy.empty else {}
     ttm_feat = extract_ttm_features(df_q) if not df_q.empty else {}
 
-    # --- 4. Event-driven? (drop coincides with new FY/quarter disclosure) ---
+    # --- 5. Event-driven? (drop coincides with new FY/quarter disclosure) ---
     event_driven = False
     event_detail = ""
     if not df_fy.empty:
@@ -147,10 +166,10 @@ def categorize_drop_reason(conn, ticker, drop_date, price_drop_pct, sector_code=
         except Exception:
             pass
 
-    # --- 5. Broken fundamental? ---
+    # --- 6. Broken fundamental? ---
     broken = is_broken_fundamental(fy_feat, ttm_feat)
 
-    # --- 6. Compose reason/explanation ---
+    # --- 7. Compose reason/explanation ---
     explanation = ""
     if gpt_category:
         explanation = f"GPT reason: {gpt_category}. "
