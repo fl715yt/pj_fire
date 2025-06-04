@@ -10,12 +10,13 @@ from simulation.technical import add_indicators
 from simulation.db_utils import get_prices, get_fundamentals, get_quarterly_fundamentals
 from simulation.fundamental_features import extract_fy_features, extract_ttm_features, is_broken_fundamental
 
-# --- Configurable Parameters ---
-UNIVERSE_CSV = os.getenv("PJ_FIRE_UNIVERSE_CSV", "pjfire_topix_company_patterns_expanded.csv")
-MIN_VOLUME = 10000           # Volume threshold
-DROP_PCT_THRESHOLD = -0.04   # -4% price drop or more
-RSI_THRESHOLD = 30           # RSI under 30 for signal
-USE_FUNDAMENTAL_FILTER = True
+from config.config import (
+    UNIVERSE_CSV,
+    MIN_VOLUME,
+    DROP_PCT_THRESHOLD,
+    RSI_THRESHOLD,
+    USE_FUNDAMENTAL_FILTER
+)
 
 def load_universe():
     df = pd.read_csv(UNIVERSE_CSV, dtype=str)
@@ -36,7 +37,14 @@ def screen_stocks(conn, date, drop_pct_threshold=DROP_PCT_THRESHOLD, rsi_thresho
     for ticker, meta in universe.iterrows():
         sector_val = meta[sector_col]
         df = get_prices(conn, ticker)
-        if df.empty or date not in df["date"].values:
+        # Defensive: Ensure 'date' column exists and is not empty
+        if df.empty or "date" not in df.columns or date not in df["date"].values:
+            if df.empty:
+                print(f"[WARN] Ticker {ticker}: price data is empty.")
+            elif "date" not in df.columns:
+                print(f"[WARN] Ticker {ticker}: no 'date' column in price data.")
+            else:
+                print(f"[WARN] Ticker {ticker}: {date} not found in price data.")
             continue
         df = add_indicators(df)
         row = df[df["date"] == date]
@@ -61,6 +69,12 @@ def screen_stocks(conn, date, drop_pct_threshold=DROP_PCT_THRESHOLD, rsi_thresho
         if prev_close == 0:
             continue
         price_drop_pct = (row["close"] - prev_close) / prev_close
+
+        # Compute volume spike vs 20-day average
+        start_idx = max(idx - 20, 0)
+        avg_volume = df.iloc[start_idx:idx]["volume"].mean() if idx > 0 else 0
+        volume_spike = (vol / avg_volume) if avg_volume > 0 else 0
+
         # --- Technical filters ---
         if price_drop_pct < drop_pct_threshold and row["rsi_14"] < rsi_threshold:
             # --- Fundamental filter (optional, can be toggled off for testing) ---
@@ -81,6 +95,7 @@ def screen_stocks(conn, date, drop_pct_threshold=DROP_PCT_THRESHOLD, rsi_thresho
                 "ma5": row["ma5"],
                 "ma25": row["ma25"],
                 "volume": vol,
+                "volume_spike": volume_spike,
                 # Add more fields as needed for scoring/GPT
             })
     return candidates

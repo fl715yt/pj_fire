@@ -15,6 +15,8 @@ from config.config import (
     GPT_DELAY_SEC,
 )
 
+MAX_RESULTS = 10
+
 # --- News Headline Filtering / Scoring ---
 ALLOWED_DOMAINS = [
     "nikkei.com", "kabutan.jp", "bloomberg.co.jp", "reuters.com",

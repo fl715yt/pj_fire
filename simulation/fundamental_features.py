@@ -16,9 +16,9 @@ def extract_fy_features(df):
     features = {}
     if len(df) < 2:
         return {"error": "Not enough FY data"}
-    # Latest and previous year
-    latest = df.iloc[0]
-    prev = df.iloc[1]
+    # Latest and previous year (copy for safe assignment)
+    latest = df.iloc[0].copy()
+    prev = df.iloc[1].copy()
     for col in ["revenue", "profit", "eps"]:
         latest[col] = pd.to_numeric(latest[col], errors="coerce")
         prev[col] = pd.to_numeric(prev[col], errors="coerce")
@@ -35,6 +35,7 @@ def extract_fy_features(df):
     features["eps_negative_years"] = int(np.sum(eps_arr < 0))
     features["profit_down_years"] = int(np.sum(np.diff(profit_arr) < 0))
     return features
+
 
 def extract_ttm_features(df_q):
     """

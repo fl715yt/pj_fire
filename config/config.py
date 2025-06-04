@@ -55,6 +55,7 @@ MAX_SIGNAL_PER_DAY         = 5              # UX guard-rail
 MIN_VOLUME                 = 10_000         # minimum daily volume for screening
 RSI_THRESHOLD              = 30             # default RSI filter
 DROP_PCT_THRESHOLD         = -0.04          # -4% or worse for drop filter
+USE_FUNDAMENTAL_FILTER = os.getenv("PJ_FIRE_USE_FUNDAMENTAL_FILTER", "1") == "1" ## enable fundamental strength filter
 
 WEIGHTS = {
     "price_drop_pct": 3.0,
@@ -89,8 +90,8 @@ STOP_LOSS_PCT              = -0.05          # –5 % SL
 # ----------------------------------------------------------------------
 #  Fundamentals import
 # ----------------------------------------------------------------------
-REQUIRED_FY_ONLY           = True           # fundamentals: full-year rows only
-ENABLE_QUARTERLY_IMPORT    = False          # flip True when /statements Q* rows are stored
+REQUIRED_FY_ONLY           = False           # fundamentals: full-year rows only
+ENABLE_QUARTERLY_IMPORT    = True          # flip True when /statements Q* rows are stored
 
 # ----------------------------------------------------------------------
 #  External endpoints (J-Quants Light Plan)
@@ -152,6 +153,13 @@ SECTOR_ETF_MAP = {
     "不動産": "1633",
 }
 MARKET_ETF = "1306"  # TOPIX ETF
+
+# ----------------------------------------------------------------------
+#  Backtest constants
+# ----------------------------------------------------------------------
+START_DATE = os.getenv("PJ_FIRE_BACKTEST_START", "2025-02-26")
+END_DATE   = os.getenv("PJ_FIRE_BACKTEST_END", "2025-05-24")
+START_CASH = int(os.getenv("PJ_FIRE_START_CASH", 1_000_000))
 
 # ----------------------------------------------------------------------
 #  Sanity checks to avoid silent mis-imports

@@ -1,24 +1,35 @@
 """
-PJ Fire — Unified Backtest Engine (with full daily stats and reporting)
+PJ Fire — Unified Backtest Engine (with full daily stats, exports, and optional analytics)
 """
 
 import os
 import pandas as pd
 from datetime import datetime
-from config.config import BT_DB_FILE, START_CASH, START_DATE, END_DATE  # <- centralize config
+import matplotlib.pyplot as plt
+
+from config.config import BT_DB_FILE, START_CASH, START_DATE, END_DATE
 from simulation.db_utils import get_conn
 from simulation.screening import screen_stocks
 from simulation.reasoning import attach_reason_to_candidates
 from simulation.ranker import get_top_signals_for_day
 from simulation.simulation_engine import simulate_trade_for_backtest, init_simulation_db, get_cash
 
-def run_backtest_engine(start_date=START_DATE, end_date=END_DATE, start_cash=START_CASH):
+def run_backtest_engine(
+    start_date=START_DATE, 
+    end_date=END_DATE, 
+    start_cash=START_CASH, 
+    output_dir="backtest/outputs"
+):
     conn = get_conn(BT_DB_FILE)
-    init_simulation_db(BT_DB_FILE)  # Ensure backtest DB is initialized
+    init_simulation_db(BT_DB_FILE)
     all_dates = pd.date_range(start=start_date, end=end_date, freq='B')
     trade_log = []
     daily_stats = []
     last_cash = start_cash
+    equity_curve = []
+
+    # Ensure output dir exists
+    os.makedirs(output_dir, exist_ok=True)
 
     for date in all_dates:
         date_str = date.strftime("%Y-%m-%d")
@@ -27,16 +38,19 @@ def run_backtest_engine(start_date=START_DATE, end_date=END_DATE, start_cash=STA
         if not candidates:
             print("No candidates for this day.")
             daily_stats.append({"date": date_str, "n_trades": 0, "n_win": 0, "n_loss": 0, "n_other": 0, "day_pl": 0, "cash": last_cash})
+            equity_curve.append({"date": date_str, "equity": last_cash})
             continue
         candidates_with_reasons = attach_reason_to_candidates(conn, candidates)
         if not candidates_with_reasons:
             print("No candidates passed reasoning filter.")
             daily_stats.append({"date": date_str, "n_trades": 0, "n_win": 0, "n_loss": 0, "n_other": 0, "day_pl": 0, "cash": last_cash})
+            equity_curve.append({"date": date_str, "equity": last_cash})
             continue
         top_signals = get_top_signals_for_day(candidates_with_reasons)
         if not top_signals:
             print("No signals above threshold.")
             daily_stats.append({"date": date_str, "n_trades": 0, "n_win": 0, "n_loss": 0, "n_other": 0, "day_pl": 0, "cash": last_cash})
+            equity_curve.append({"date": date_str, "equity": last_cash})
             continue
 
         n_win, n_loss, n_other = 0, 0, 0
@@ -57,13 +71,24 @@ def run_backtest_engine(start_date=START_DATE, end_date=END_DATE, start_cash=STA
             "n_win": n_win, "n_loss": n_loss, "n_other": n_other,
             "day_pl": day_pl, "cash": last_cash
         })
+        equity_curve.append({"date": date_str, "equity": last_cash})
 
     conn.close()
 
-    # === End of backtest summary ===
+    # === Output results to CSV for analysis ===
+
+    df_equity = pd.DataFrame(equity_curve)
+    df_trades = pd.DataFrame(trade_log)
+    df_stats = pd.DataFrame(daily_stats)
+
+    df_equity.to_csv(os.path.join(output_dir, "equity_curve.csv"), index=False)
+    df_trades.to_csv(os.path.join(output_dir, "trades.csv"), index=False)
+    df_stats.to_csv(os.path.join(output_dir, "daily_stats.csv"), index=False)
+    print(f"✅ Backtest outputs saved to {output_dir}/")
+
+    # Optional: print a quick summary
     n_trades = sum(d["n_trades"] for d in daily_stats)
     n_win = sum(d["n_win"] for d in daily_stats)
-    n_loss = sum(d["n_loss"] for d in daily_stats)
     win_rate = n_win / n_trades if n_trades else 0
     final_cash = daily_stats[-1]["cash"] if daily_stats else start_cash
     final_pl = final_cash - start_cash
@@ -74,11 +99,11 @@ def run_backtest_engine(start_date=START_DATE, end_date=END_DATE, start_cash=STA
     print(f"Final P/L: {final_pl:.0f} yen")
     print(f"Ending cash: {final_cash:,.0f} yen")
     print("\nFirst 5 daily stats:")
-    print(pd.DataFrame(daily_stats).head())
+    print(df_stats.head())
     print("\nFirst 5 trades:")
-    print(pd.DataFrame(trade_log).head())
+    print(df_trades.head())
 
-    return daily_stats, trade_log
+    return df_stats, df_trades, df_equity
 
 if __name__ == "__main__":
     run_backtest_engine()

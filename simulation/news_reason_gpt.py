@@ -51,13 +51,13 @@ def categorize_reason_with_gpt(ticker, date, price_drop_pct, headlines):
 """
 
     try:
-        response = openai.ChatCompletion.create(
+        response = openai.chat.completions.create(
             model=GPT_MODEL,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=12,
             temperature=0,
         )
-        category = response.choices[0].message["content"].strip()
+        category = response.choices[0].message.content.strip()
         # Validate result
         if category not in REASONING_CATEGORY_LABELS:
             print(f"[WARN] Unrecognized GPT category for {ticker} on {date}: '{category}'")

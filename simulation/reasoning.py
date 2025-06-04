@@ -15,7 +15,7 @@ from config.config import (
     REASONING_CATEGORY_LABELS,
     SECTOR_ETF_MAP,
     CATEGORY_SCORING,
-    PJ_FIRE_UNIVERSE_CSV,
+    UNIVERSE_CSV,
     GPT_DELAY_SEC,
     OPENAI_API_KEY,
     GPT_MODEL,
@@ -69,7 +69,7 @@ def is_macro_or_sector_drop(
     sector_mean_return = None
     if (sector_etf_return is None) and sector_code:
         try:
-            universe = pd.read_csv(PJ_FIRE_UNIVERSE_CSV, dtype=str)
+            universe = pd.read_csv(UNIVERSE_CSV, dtype=str)
             sector_tickers = universe[universe["sector17"] == sector_code]["ticker"].tolist()
             returns = []
             for s in sector_tickers:
@@ -103,10 +103,11 @@ def categorize_drop_reason(conn, ticker, drop_date, price_drop_pct, sector_code=
       fy_features: dict
       ttm_features: dict
       headlines: str
+      event_driven: bool
     """
     # --- Macro/Sector check (before anything else!) ---
     if is_macro_or_sector_drop(conn, ticker, drop_date, price_drop_pct, sector_code=sector_code):
-        return "macro_or_sector_drop", "Drop matches market/sector move.", {}, {}, ""
+        return "macro_or_sector_drop", "Drop matches market/sector move.", {}, {}, "", False
 
     # --- 1. Fetch news headlines ---
     headlines = fetch_news_for_ticker(ticker, drop_date)
@@ -118,7 +119,7 @@ def categorize_drop_reason(conn, ticker, drop_date, price_drop_pct, sector_code=
         score = CATEGORY_SCORING.get(gpt_category, 0.0)
         if score == 0.0:
             explanation = f"[EXCLUDED] {ticker} {drop_date} due to GPT category: {gpt_category}"
-            return gpt_category, explanation, {}, {}, headlines
+            return gpt_category, explanation, {}, {}, headlines, False  # << add 'False'
 
     # --- 3. Fundamentals: FY + Quarterly/TTM ---
     df_fy = get_fundamentals(conn, ticker, period_type="FY", n=5)
@@ -166,7 +167,7 @@ def categorize_drop_reason(conn, ticker, drop_date, price_drop_pct, sector_code=
         reason = "technical/unknown"
         explanation += "No clear fundamental or news reason for this drop."
 
-    return reason, explanation, fy_feat, ttm_feat, headlines
+    return reason, explanation, fy_feat, ttm_feat, headlines, event_driven  # << always 6
 
 def attach_reason_to_candidates(conn, candidates, use_gpt=True, verbose=False):
     """
@@ -186,7 +187,7 @@ def attach_reason_to_candidates(conn, candidates, use_gpt=True, verbose=False):
         price_drop_pct = c.get("price_drop_pct", 0)
         sector_code = c.get("sector17", None)
         # Run the canonical drop reason classifier
-        reason, explanation, fy_feat, ttm_feat, headlines = categorize_drop_reason(
+        reason, explanation, fy_feat, ttm_feat, headlines, event_driven = categorize_drop_reason(
             conn, ticker, date, price_drop_pct, sector_code=sector_code, use_gpt=use_gpt
         )
         # Exclude if reason is a filter-out category
@@ -199,7 +200,11 @@ def attach_reason_to_candidates(conn, candidates, use_gpt=True, verbose=False):
         c["fy_features"] = fy_feat
         c["ttm_features"] = ttm_feat
         c["headlines"] = headlines
+        c["gpt_reason_score"] = CATEGORY_SCORING.get(reason, 0.0)
+        c["fundamental_strength"] = fy_feat.get("eps_yoy", 0) if fy_feat else 0
+        c["recent_earnings_release"] = event_driven
         enriched.append(c)
+
         if verbose:
             print(f"[PASS] {ticker} {date}: {reason} ({explanation})")
         # Optional: avoid hitting API rate limits

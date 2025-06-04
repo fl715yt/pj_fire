@@ -6,6 +6,10 @@ Supports trade/event logging, warnings, and info messages.
 
 from datetime import datetime
 import os
+LOG_USE_EMOJI = os.getenv("PJ_FIRE_LOG_USE_EMOJI", "1") == "1"
+EMOJI_TRADE = "💹" if LOG_USE_EMOJI else "[TRADE]"
+EMOJI_WARN = "⚠️" if LOG_USE_EMOJI else "[WARN]"
+EMOJI_INFO = "ℹ️" if LOG_USE_EMOJI else "[INFO]"
 
 try:
     from config.config import LOG_PATH

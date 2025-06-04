@@ -22,11 +22,17 @@ from dotenv import load_dotenv
 load_dotenv()
 JQUANTS_EMAIL = os.getenv("JQUANTS_EMAIL")
 JQUANTS_PASSWORD = os.getenv("JQUANTS_PASSWORD")
-API_BASE = "https://api.jquants.com"
+JQ_BASE_URL = "https://api.jquants.com"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GPT_MODEL = "gpt-4o"
 GPT_DELAY_SEC = 1.2
 OUT_PATH = "topix_company_list.csv"
+UNIVERSE_CSV
+
+from config.config import (
+    JQUANTS_EMAIL, JQUANTS_PASSWORD, JQ_BASE_URL, OPENAI_API_KEY,
+    GPT_MODEL, GPT_DELAY_SEC, VARIANT_CSV, UNIVERSE_CSV
+)
 
 SUFFIX_ABBREVIATIONS = [
     ("ホールディングス", "HD"),
@@ -69,16 +75,16 @@ def halfwidth_to_fullwidth(s):
 
 def get_id_token():
     data = {"mailaddress": JQUANTS_EMAIL, "password": JQUANTS_PASSWORD}
-    r = requests.post(f"{API_BASE}/v1/token/auth_user", data=json.dumps(data), headers={"Content-Type": "application/json"})
+    r = requests.post(f"{JQ_BASE_URL}/v1/token/auth_user", data=json.dumps(data), headers={"Content-Type": "application/json"})
     r.raise_for_status()
     refresh_token = r.json()["refreshToken"]
-    r = requests.post(f"{API_BASE}/v1/token/auth_refresh?refreshtoken={refresh_token}")
+    r = requests.post(f"{JQ_BASE_URL}/v1/token/auth_refresh?refreshtoken={refresh_token}")
     r.raise_for_status()
     return r.json()["idToken"]
 
 def fetch_topix_metadata():
     token = get_id_token()
-    url = f"{API_BASE}/v1/listed/info"
+    url = f"{JQ_BASE_URL}/v1/listed/info"
     headers = {"Authorization": f"Bearer {token}"}
     resp = requests.get(url, headers=headers)
     resp.raise_for_status()
@@ -155,8 +161,8 @@ def main():
         time.sleep(GPT_DELAY_SEC)
     df["variants"] = all_variants
     print("[STEP 3] Saving to CSV...")
-    df.to_csv(OUT_PATH, index=False, encoding="utf-8-sig")
-    print(f"[DONE] Saved: {OUT_PATH}")
+    df.to_csv(UNIVERSE_CSV, index=False, encoding="utf-8-sig")
+    print(f"[DONE] Saved: {UNIVERSE_CSV}")
     print(df.head(10))
 
 if __name__ == "__main__":

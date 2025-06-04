@@ -80,16 +80,30 @@ def insert_prices(conn, df):
 
 def insert_fundamentals(conn, df):
     """Insert a DataFrame of fundamentals (FY and/or quarterly) into the table."""
-    df.to_sql("fundamentals", conn, if_exists="append", index=False)
+    for _, row in df.iterrows():
+        try:
+            conn.execute("""
+                INSERT OR REPLACE INTO fundamentals 
+                    (ticker, period_type, period_end, revenue, eps, profit)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (row['ticker'], row['period_type'], row['period_end'], row['revenue'], row['eps'], row['profit']))
+        except Exception as e:
+            print(f"[WARN] Insert failed for {row['ticker']} {row['period_type']} {row['period_end']}: {e}")
+    conn.commit()
 
 def get_prices(conn, ticker, start_date=None, end_date=None):
     """Fetch daily prices for a ticker and optional date range."""
     query = "SELECT * FROM prices WHERE ticker = ?"
     params = [ticker]
-    if start_date and end_date:
-        query += " AND date BETWEEN ? AND ?"
-        params += [start_date, end_date]
-    return pd.read_sql(query, conn, params=params)
+    if start_date:
+        query += " AND date >= ?"
+        params.append(start_date)
+    if end_date:
+        query += " AND date <= ?"
+        params.append(end_date)
+    df = pd.read_sql(query, conn, params=params)
+    # Always ensure 'date' is a column, not index
+    return df
 
 def get_fundamentals(conn, ticker, period_type="FY", n=5):
     """
@@ -108,7 +122,7 @@ def get_fundamentals(conn, ticker, period_type="FY", n=5):
     
 def get_quarterly_fundamentals(conn, ticker, n=4):
     """
-    Fetches up to n most recent quarterly (Q1–Q4) reports for a given ticker.
+    Fetches up to n most recent quarterly (1Q–4Q) reports for a given ticker.
     """
     query = """
     SELECT * FROM fundamentals

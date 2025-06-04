@@ -7,11 +7,11 @@ import pandas as pd
 
 def calc_rsi(prices, window=14):
     delta = prices.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(window=window).mean()
-    avg_loss = loss.rolling(window=window).mean()
-    rs = avg_gain / avg_loss
+    up = delta.clip(lower=0)
+    down = -delta.clip(upper=0)
+    ema_up = up.ewm(span=window, adjust=False).mean()
+    ema_down = down.ewm(span=window, adjust=False).mean()
+    rs = ema_up / (ema_down + 1e-8)
     rsi = 100 - (100 / (1 + rs))
     return rsi
 

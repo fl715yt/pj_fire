@@ -11,7 +11,7 @@ import sqlite3
 from datetime import datetime
 from config.config import (
     SIM_DB_FILE, BT_DB_FILE,
-    DEFAULT_CASH, DEFAULT_LOT_SIZE, FORCED_EXIT_THRESHOLD
+    DEFAULT_CASH, DEFAULT_LOT_SIZE, FORCED_EXIT_THRESHOLD, DRAWDOWN_REDUCE_THRESHOLD, DRAWDOWN_STOP_THRESHOLD
 )
 from simulation.ranker import get_top_signals_for_day
 from simulation.db_utils import init_pjfire_tables
@@ -65,6 +65,7 @@ def execute_buy(conn, ticker, price, qty, signal_score, date, strategy="main"):
     """, (ticker, date, qty, price, "open", strategy, signal_score))
     update_cash(conn, cash - (qty * price), date)
     log_trade(conn, ticker, "BUY", price, qty, signal_score, date, strategy=strategy)
+    conn.commit()  # <---- Commit after logging the trade
     print(f"[SIM] Bought {qty}x {ticker} at {price} on {date}.")
     return True
 
@@ -80,8 +81,8 @@ def execute_sell(conn, ticker, price, date, reason="NormalExit"):
     update_cash(conn, cash + price * qty, date)
     c.execute(f"UPDATE {PORTFOLIO_TABLE} SET status = 'closed' WHERE ticker = ? AND status = 'open'", (ticker,))
     log_trade(conn, ticker, "SELL", price, qty, 0, date, reason=reason)
+    conn.commit()  # <---- Commit after logging the trade
     print(f"[SIM] Sold {qty}x {ticker} at {price} on {date}. Reason: {reason}")
-    conn.commit()
     return True
 
 def log_trade(conn, ticker, side, price, qty, signal_score, date, reason="", strategy="main"):
@@ -93,6 +94,17 @@ def log_trade(conn, ticker, side, price, qty, signal_score, date, reason="", str
     """, (now, ticker, qty, price, side, strategy, reason))
     conn.commit()
 
+def get_dynamic_lot_size(conn):
+    # Example logic: halve size after 5% drawdown, stop after 10%
+    initial_cash = DEFAULT_CASH  # import this from config
+    cash = get_cash(conn)
+    drawdown = (initial_cash - cash) / initial_cash
+    if drawdown >= DRAWDOWN_STOP_THRESHOLD:
+        return 0  # stop trading
+    elif drawdown >= DRAWDOWN_REDUCE_THRESHOLD:
+        return DEFAULT_LOT_SIZE // 2
+    return DEFAULT_LOT_SIZE
+
 def forced_exit_logic(conn, ranked_signals):
     held_df = get_portfolio(conn)
     for _, held in held_df.iterrows():
@@ -102,7 +114,11 @@ def forced_exit_logic(conn, ranked_signals):
             if s["score"] > held_score * (1 + FORCED_EXIT_THRESHOLD):
                 print(f"[FORCED EXIT] {ticker} -> {s['ticker']} (score {s['score']:.2f})")
                 execute_sell(conn, ticker, s["price"], s["date"], reason="ForcedExit")
-                execute_buy(conn, s["ticker"], s["price"], DEFAULT_LOT_SIZE, s["score"], s["date"])
+                lot_size = get_dynamic_lot_size(conn)   # <--- NEW: drawdown-based size
+                if lot_size > 0:
+                    execute_buy(conn, s["ticker"], s["price"], lot_size, s["score"], s["date"])
+                else:
+                    print("[FORCED EXIT] Trading paused due to drawdown.")
                 break
 
 def run_simulation_for_day(candidates, date, db_path=SIM_DB_FILE):
