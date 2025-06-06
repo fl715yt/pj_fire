@@ -39,15 +39,17 @@ BT_DB_FILE: str = os.getenv(
 # ----------------------------------------------------------------------
 #  Data files & universe
 # ----------------------------------------------------------------------
-UNIVERSE_CSV      = os.getenv("PJ_FIRE_UNIVERSE_CSV", "topix_company_list.csv")
-VARIANT_CSV       = os.getenv("PJ_FIRE_VARIANT_CSV", "topix_company_list.csv")
-LOG_PATH          = str(Path("logs") / "pj_fire.log")
+UNIVERSE_CSV               = os.getenv("PJ_FIRE_UNIVERSE_CSV", "topix_company_list.csv")
+VARIANT_CSV                = os.getenv("PJ_FIRE_VARIANT_CSV", "topix_company_list.csv")
+TRADING_CALENDAR_CSV       = os.getenv("PJ_FIRE_CALENDAR_CSV", "trading_calendar.csv")
+LOG_PATH                   = str(Path("logs") / "pj_fire.log")
 
 # ----------------------------------------------------------------------
 #  Strategy/Scoring Constants
 # ----------------------------------------------------------------------
 DEFAULT_LOT_SIZE           = 100            # shares per trade
 DEFAULT_CASH               = 1_000_000      # starting balance for new sim accounts
+LOT_UNIT_SIZE              = 100            # Minimum unit for TSE stocks
 MIN_TRADE_AMOUNT           = 10_000         # ¥ — ignore micro signals
 FORCED_EXIT_THRESHOLD      = 0.07           # ≥ 7 % score gap ⇒ forced exit
 TOP_N_RANK                 = 10             # candidates forwarded to signal stage
@@ -55,7 +57,7 @@ MAX_SIGNAL_PER_DAY         = 5              # UX guard-rail
 MIN_VOLUME                 = 50_000         # minimum daily volume for screening
 RSI_THRESHOLD              = 30             # default RSI filter
 DROP_PCT_THRESHOLD         = -0.04          # -4% or worse for drop filter
-ENTRY_BUFFER               = 0.05  
+ENTRY_BUFFER               = 0.005  
 GAP_DOWN_LIMIT             = 0.02
 USE_FUNDAMENTAL_FILTER = os.getenv("PJ_FIRE_USE_FUNDAMENTAL_FILTER", "1") == "1" ## enable fundamental strength filter
 
@@ -87,7 +89,7 @@ DRAWDOWN_STOP_THRESHOLD    = 0.10           # 10 % DD ⇒ pause new trades
 #  Exit rules
 # ----------------------------------------------------------------------
 TAKE_PROFIT_PCT            = 0.05           # +5 % TP
-STOP_LOSS_PCT              = -0.05          # –5 % SL
+STOP_LOSS_PCT              = -0.03          # –3 % SL
 MAX_HOLDING_DAYS          = 3             # max days to hold a position
 
 # ----------------------------------------------------------------------
@@ -103,6 +105,7 @@ JQ_BASE_URL                = "https://api.jquants.com/v1"
 PRICE_ENDPOINT             = f"{JQ_BASE_URL}/prices/daily_quotes"
 FY_ENDPOINT                = f"{JQ_BASE_URL}/fins/statements"   # FY rows only
 LISTED_INFO_ENDPOINT       = f"{JQ_BASE_URL}/listed/info"
+TRADING_CALENDAR_ENDPOINT  = f"{JQ_BASE_URL}/markets/trading_calendar"
 
 # ----------------------------------------------------------------------
 #  Project metadata / UX

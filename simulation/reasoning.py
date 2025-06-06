@@ -130,7 +130,7 @@ def categorize_drop_reason(conn, ticker, drop_date, price_drop_pct, sector_code=
     if matched_kw:
         explanation = f"[EXCLUDED] {ticker} {drop_date} keyword: {matched_kw}"
         log_info(explanation)
-        return "excluded", explanation, {}, {}, headlines, False  # << add 'False'
+        return "very_bad_news", explanation, {}, {}, headlines, False  # << add 'False'
 
     # --- 3. Try GPT-based news categorization ---
     if use_gpt:

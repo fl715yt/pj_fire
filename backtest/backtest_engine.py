@@ -7,17 +7,20 @@ import pandas as pd
 from datetime import datetime
 import matplotlib.pyplot as plt
 
-from config.config import BT_DB_FILE, START_CASH, START_DATE, END_DATE
-from simulation.db_utils import get_conn
+from config.config import BT_DB_FILE, START_CASH, START_DATE, END_DATE, DEFAULT_LOT_SIZE
+from simulation.db_utils import get_conn, get_cash, get_prices
 from simulation.screening import screen_stocks
 from simulation.reasoning import attach_reason_to_candidates
 from simulation.ranker import get_top_signals_for_day
+from simulation.utils import load_trading_days, get_next_trading_day
 from simulation.simulation_engine import (
     simulate_trade_for_backtest,
     init_simulation_db,
     get_cash,
     time_exit_logic
 )
+
+TRADING_DAYS = load_trading_days()  # Load ONCE at module startup
 
 def run_backtest_engine(
     start_date=START_DATE, 
@@ -57,32 +60,69 @@ def run_backtest_engine(
             daily_stats.append({"date": date_str, "n_trades": 0, "n_win": 0, "n_loss": 0, "n_other": 0, "day_pl": 0, "cash": last_cash})
             equity_curve.append({"date": date_str, "equity": last_cash})
             continue
-        
+
         # Close positions held beyond the max holding period
         time_exit_logic(conn, date_str)
 
+        # --- Sort signals by normalized_score descending (for fair cash allocation) ---
+        ranked_signals = sorted(top_signals, key=lambda x: x.get("normalized_score", 0), reverse=True)
+
         n_win, n_loss, n_other = 0, 0, 0
         day_pl = 0
-        for sig in top_signals:
-            result, pl, entry_date, entry_price = simulate_trade_for_backtest(conn, sig, date_str, return_result=True)
-            trade_log.append({
-                **sig,
-                "signal_date": date_str,
-                "entry_date": entry_date,
-                "entry_price": entry_price,
-                "result": result,
-                "pl": pl,
-            })
-            if result == "TP":
-                n_win += 1
-            elif result == "SL":
-                n_loss += 1
+
+        for sig in ranked_signals:
+            # Get open price for signal day (for logging/skip calculation)
+            prices = get_prices(conn, sig["ticker"], start_date=date_str, end_date=date_str)
+            if prices.empty:
+                continue
+            entry_price = prices["open"].iloc[0]
+            lot_cost = DEFAULT_LOT_SIZE * entry_price
+            cash = get_cash(conn)
+
+            # --- Always simulate "what-if" (virtual) trade, even if not enough cash ---
+            whatif_result, whatif_pl, whatif_entry_date, whatif_entry_price = simulate_trade_for_backtest(
+                conn, sig, date_str, TRADING_DAYS, return_result=True, execute_trade=False
+            )
+
+            if cash >= lot_cost:
+                # Actually execute trade (updates cash, etc.)
+                actual_result, pl, actual_entry_date, actual_entry_price = simulate_trade_for_backtest(
+                    conn, sig, date_str, TRADING_DAYS, return_result=True, execute_trade=True
+                )
+                trade_log.append({
+                    **sig,
+                    "signal_date": date_str,
+                    "entry_date": actual_entry_date,
+                    "entry_price": actual_entry_price,
+                    "result": "BOUGHT",
+                    "pl": whatif_pl,  # always log what-if P/L for fair threshold analysis
+                    "normalized_score": sig.get("normalized_score"),
+                })
+                # Stat tracking
+                if actual_result == "TP":
+                    n_win += 1
+                elif actual_result == "SL":
+                    n_loss += 1
+                else:
+                    n_other += 1
+                day_pl += pl
             else:
-                n_other += 1
-            day_pl += pl
+                # Skipped for cash, still log what-if P/L
+                trade_log.append({
+                    **sig,
+                    "signal_date": date_str,
+                    "entry_date": whatif_entry_date,
+                    "entry_price": whatif_entry_price,
+                    "result": "SKIPPED_NO_CASH",
+                    "pl": whatif_pl,
+                    "normalized_score": sig.get("normalized_score"),
+                })
+                # Not counted in daily win/loss
+
         last_cash = get_cash(conn)
         daily_stats.append({
-            "date": date_str, "n_trades": len(top_signals),
+            "date": date_str,
+            "n_trades": len(ranked_signals),
             "n_win": n_win, "n_loss": n_loss, "n_other": n_other,
             "day_pl": day_pl, "cash": last_cash
         })
