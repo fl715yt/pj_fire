@@ -181,10 +181,12 @@ def run_backtest_engine(
     df_trades = pd.DataFrame(trade_log)
     df_stats = pd.DataFrame(daily_stats)
 
-    df_equity.to_csv(os.path.join(output_dir, "equity_curve.csv"), index=False)
-    df_trades.to_csv(os.path.join(output_dir, "trades.csv"), index=False)
-    df_stats.to_csv(os.path.join(output_dir, "daily_stats.csv"), index=False)
-    print(f"✅ Backtest outputs saved to {output_dir}/")
+    run_tag = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+    df_equity.to_csv(os.path.join(output_dir, f"equity_curve_{run_tag}.csv"), index=False)
+    df_trades.to_csv(os.path.join(output_dir, f"trades_{run_tag}.csv"), index=False)
+    df_stats.to_csv(os.path.join(output_dir, f"daily_stats_{run_tag}.csv"), index=False)
+    print(f"✅ Backtest outputs saved to {output_dir}/ as *_ {run_tag}.csv")
 
     n_trades = sum(d["n_trades"] for d in daily_stats)
     n_win = sum(d["n_win"] for d in daily_stats)
@@ -192,7 +194,7 @@ def run_backtest_engine(
     final_cash = daily_stats[-1]["cash"] if daily_stats else start_cash
     final_pl = final_cash - start_cash
 
-    print("\n==== BACKTEST SUMMARY ====")
+    print(f"\n==== BACKTEST SUMMARY ({run_tag}) ====")
     print(f"Total trades: {n_trades}")
     print(f"Win rate (TP): {win_rate:.2%}")
     print(f"Final P/L: {final_pl:.0f} yen")

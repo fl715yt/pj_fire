@@ -187,16 +187,64 @@ def simulate_trade_for_backtest(
     return_result=False, execute_trade=False
 ):
     """
-    Simulates a single trade.
-    - Entry: next day open after signal
+    Simulates a single trade with production-ready filters.
+    - Only trades where: 
+        - 'no_news' reason,
+        - normalized_score >= 90,
+        - NOT "not enough FY data",
+        - NOT 'slightly_bad_news',
+        - Green candle on day N-1.
+    - Entry: next day open after signal (day N).
     - If open gaps through TP or SL, SKIP trade.
     - If SL > TP, SKIP trade.
     - Exit: TP/SL/timeout as before.
     Returns: result, pl, entry_date, entry_price, exit_date, exit_price, quantity
     """
     ticker = signal["ticker"]
+    # 0. FY data error exclusion
+    if signal.get("fy_features", {}).get("error") == "Not enough FY data":
+        if return_result:
+            return "SKIPPED_NOT_ENOUGH_FY", 0, None, None, None, None, 0
+        else:
+            return
 
-    # === 1. Entry on next trading day's open ===
+    # 1. Reason filter
+    if signal.get("reason_category") != "no_news":
+        if return_result:
+            return "SKIPPED_REASON", 0, None, None, None, None, 0
+        else:
+            return
+
+    # 2. Score filter
+    if signal.get("normalized_score", 0) < 90:
+        if return_result:
+            return "SKIPPED_LOW_SCORE", 0, None, None, None, None, 0
+        else:
+            return
+
+    # 3. Slightly_bad_news filter (in case of wrong reason assignment)
+    if signal.get("reason_category") == "slightly_bad_news":
+        if return_result:
+            return "SKIPPED_BAD_NEWS", 0, None, None, None, None, 0
+        else:
+            return
+
+    # 4. Green candle on day N-1 (yesterday)
+    idx = trading_days.index(signal_date) if signal_date in trading_days else None
+    if idx is None or idx == 0:
+        if return_result:
+            return "SKIPPED_NO_PREV_DAY", 0, None, None, None, None, 0
+        else:
+            return
+    prev_day = trading_days[idx - 1]
+    prev_prices = get_prices(conn, ticker, start_date=prev_day, end_date=prev_day)
+    if prev_prices.empty or prev_prices["close"].iloc[0] <= prev_prices["open"].iloc[0]:
+        if return_result:
+            return "SKIPPED_NO_GREEN_CANDLE", 0, None, None, None, None, 0
+        else:
+            return
+
+    # === 5. Entry on next trading day's open ===
     next_entry_date = get_next_trading_day(signal_date, trading_days, 1)
     if not next_entry_date:
         if return_result:
@@ -218,14 +266,14 @@ def simulate_trade_for_backtest(
     stop_loss = entry_price * (1 - STOP_LOSS_PCT)
     max_holding = MAX_HOLDING_DAYS
 
-    # === SKIP: If SL > TP, don't enter ===
+    # === 6. SKIP: If SL > TP, don't enter ===
     if stop_loss > target_tp:
         if return_result:
             return "SKIPPED_INVALID_SL_GT_TP", 0, entry_date, entry_price, None, None, 0
         else:
             return
 
-    # === PRE-ENTRY: If open already gapped through TP or SL, SKIP this trade ===
+    # === 7. PRE-ENTRY: If open already gapped through TP or SL, SKIP this trade ===
     if entry_price <= stop_loss:
         if return_result:
             return "SKIPPED_GAP_AT_OPEN_SL", 0, entry_date, entry_price, None, None, 0
@@ -237,7 +285,7 @@ def simulate_trade_for_backtest(
         else:
             return
 
-    # 2. Set quantity
+    # 8. Set quantity
     if execute_trade:
         cash = get_cash(conn)
         max_lots = int(cash // (entry_price * LOT_UNIT_SIZE))
@@ -254,7 +302,7 @@ def simulate_trade_for_backtest(
     exit_price = None
     exit_date = None
 
-    # === 3. Simulate holding days ===
+    # === 9. Simulate holding days ===
     for offset in range(0, max_holding):
         check_date = get_next_trading_day(entry_date, trading_days, offset)
         if not check_date:
@@ -290,7 +338,7 @@ def simulate_trade_for_backtest(
 
     pl = (exit_price - entry_price) * quantity if exit_price is not None else 0
 
-    # 5. If real trade, update cash/portfolio
+    # 10. If real trade, update cash/portfolio
     if execute_trade and exit_price is not None:
         update_cash(conn, -quantity * entry_price)
         update_portfolio(conn, ticker, entry_date, quantity, entry_price, "OPEN", signal.get("strategy", "mean_reversion"), signal.get("score", 0))
