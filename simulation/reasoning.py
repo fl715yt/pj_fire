@@ -1,11 +1,8 @@
 """
-PJ Fire — Unified Reasoning Module (Macro/Sector Hybrid, GPT, Fundamentals)
-Classifies/categorizes reason for stock price drops, using:
-- Macro/sector drop logic (ETF or sector mean, from config)
-- GPT-based news analysis (category labels, model, and scoring from config)
-- Fundamentals (FY, TTM/quarterly)
-- Event-driven checks (earnings, macro, etc.)
-Usable in both simulation and backtest.
+PJ Fire — Unified Reasoning Module (PATCHED)
+Categorizes reason for stock price drops, attaches all needed fields.
+Logs all candidate exclusions with reason and features.
+No silent skips. Robust error handling.
 """
 
 import os
@@ -28,10 +25,7 @@ from simulation.news_reason_gpt import categorize_reason_with_gpt
 from simulation.logger import log_info
 
 def contains_exclusion_keyword(headlines):
-    """
-    Checks if any exclusion keywords are present in the headlines.
-    Returns True if any keyword is found, False otherwise.
-    """
+    """Returns first matching exclusion keyword if found, else None."""
     for keyword in EXCLUSION_KEYWORDS:
         if keyword and keyword in str(headlines):
             return keyword
@@ -42,10 +36,8 @@ def is_macro_or_sector_drop(
     market_ticker="1306", sector_etf_map=SECTOR_ETF_MAP
 ):
     """
-    Returns True if the drop is likely macro/sector-driven (ETF or sector mean).
-    Tries sector ETF first; else falls back to sector mean.
+    Returns True if drop is likely macro/sector-driven (ETF or sector mean).
     """
-    # --- 1. Market ETF (TOPIX: 1306) ---
     try:
         market_df = get_prices(conn, market_ticker)
         m_row = market_df[market_df["date"] == drop_date]
@@ -61,7 +53,6 @@ def is_macro_or_sector_drop(
     except Exception:
         market_return = 0
 
-    # --- 2. Sector ETF (if mapping provided and ETF exists for sector) ---
     sector_etf_return = None
     if sector_etf_map and sector_code and sector_code in sector_etf_map:
         sector_etf = sector_etf_map[sector_code]
@@ -77,7 +68,6 @@ def is_macro_or_sector_drop(
         except Exception:
             sector_etf_return = None
 
-    # --- 3. Sector mean fallback ---
     sector_mean_return = None
     if (sector_etf_return is None) and sector_code:
         try:
@@ -98,7 +88,6 @@ def is_macro_or_sector_drop(
         except Exception:
             sector_mean_return = None
 
-    # --- 4. Decision logic: macro or sector-driven? ---
     for ref_return in [market_return, sector_etf_return, sector_mean_return]:
         if ref_return is not None:
             if abs(price_drop_pct - ref_return) < 0.015:
@@ -110,16 +99,20 @@ def is_macro_or_sector_drop(
 def categorize_drop_reason(conn, ticker, drop_date, price_drop_pct, sector_code=None, use_gpt=True):
     """
     Returns:
-      reason_category: e.g. "misinterpreted_news", "very_bad_news", etc.
+      reason_category: str
       explanation: str (for logs/display)
       fy_features: dict
       ttm_features: dict
       headlines: str
       event_driven: bool
+    Always logs/skips with full reason and features if excluded.
     """
-    # --- Macro/Sector check (before anything else!) ---
+    # --- Macro/Sector check (first) ---
     if is_macro_or_sector_drop(conn, ticker, drop_date, price_drop_pct, sector_code=sector_code):
-        return "macro_or_sector_drop", "Drop matches market/sector move.", {}, {}, "", False
+        msg = f"[EXCLUDED] {ticker} {drop_date} macro/sector drop detected"
+        print(msg)
+        log_info(msg)
+        return "macro_or_sector_drop", msg, {}, {}, "", False
 
     # --- 1. Fetch news headlines ---
     headlines = fetch_news_for_ticker(ticker, drop_date)
@@ -129,8 +122,9 @@ def categorize_drop_reason(conn, ticker, drop_date, price_drop_pct, sector_code=
     matched_kw = contains_exclusion_keyword(headlines)
     if matched_kw:
         explanation = f"[EXCLUDED] {ticker} {drop_date} keyword: {matched_kw}"
+        print(explanation)
         log_info(explanation)
-        return "very_bad_news", explanation, {}, {}, headlines, False  # << add 'False'
+        return "very_bad_news", explanation, {}, {}, headlines, False
 
     # --- 3. Try GPT-based news categorization ---
     if use_gpt:
@@ -138,7 +132,9 @@ def categorize_drop_reason(conn, ticker, drop_date, price_drop_pct, sector_code=
         score = CATEGORY_SCORING.get(gpt_category, 0.0)
         if score == 0.0:
             explanation = f"[EXCLUDED] {ticker} {drop_date} due to GPT category: {gpt_category}"
-            return gpt_category, explanation, {}, {}, headlines, False  # << add 'False'
+            print(explanation)
+            log_info(explanation)
+            return gpt_category, explanation, {}, {}, headlines, False
 
     # --- 4. Fundamentals: FY + Quarterly/TTM ---
     df_fy = get_fundamentals(conn, ticker, period_type="FY", n=5)
@@ -177,16 +173,22 @@ def categorize_drop_reason(conn, ticker, drop_date, price_drop_pct, sector_code=
         reason = "fundamental-driven"
         explanation += (f"{event_detail}. EPS: {fy_feat.get('eps','?')}, EPS YoY: {fy_feat.get('eps_yoy','?'):.1%}, "
                         f"Profit TTM: {ttm_feat.get('profit_ttm','?')}. Broken multi-year trend detected.")
+        print(f"[EXCLUDED] {ticker} {drop_date}: {reason} ({explanation})")
+        log_info(f"[EXCLUDED] {ticker} {drop_date}: {reason} ({explanation})")
+        return reason, explanation, fy_feat, ttm_feat, headlines, event_driven
     elif broken:
         reason = "broken"
         explanation += "Stock failed fundamental health checks (negative EPS, profit downtrend, or negative TTM profit)."
+        print(f"[EXCLUDED] {ticker} {drop_date}: {reason} ({explanation})")
+        log_info(f"[EXCLUDED] {ticker} {drop_date}: {reason} ({explanation})")
+        return reason, explanation, fy_feat, ttm_feat, headlines, event_driven
     elif gpt_category:
         reason = gpt_category
     else:
         reason = "technical/unknown"
         explanation += "No clear fundamental or news reason for this drop."
 
-    return reason, explanation, fy_feat, ttm_feat, headlines, event_driven  # << always 6
+    return reason, explanation, fy_feat, ttm_feat, headlines, event_driven
 
 def attach_reason_to_candidates(conn, candidates, use_gpt=True, verbose=False):
     """
@@ -196,7 +198,7 @@ def attach_reason_to_candidates(conn, candidates, use_gpt=True, verbose=False):
       - fy_features
       - ttm_features
       - headlines
-    Drops candidates with excluded GPT categories (very_bad_news, macro_or_sector_drop, fundamental-driven, broken).
+    Logs and excludes candidates with macro, very_bad_news, fundamental-driven, broken.
     Returns filtered & enriched list.
     """
     enriched = []
@@ -205,28 +207,27 @@ def attach_reason_to_candidates(conn, candidates, use_gpt=True, verbose=False):
         date = c["date"]
         price_drop_pct = c.get("price_drop_pct", 0)
         sector_code = c.get("sector17", None)
-        # Run the canonical drop reason classifier
+        # Run canonical drop reason classifier
         reason, explanation, fy_feat, ttm_feat, headlines, event_driven = categorize_drop_reason(
             conn, ticker, date, price_drop_pct, sector_code=sector_code, use_gpt=use_gpt
         )
-        # Exclude if reason is a filter-out category
         if reason in ["very_bad_news", "macro_or_sector_drop", "fundamental-driven", "broken"]:
+            # PATCH: log every exclusion
             if verbose:
                 print(f"[SKIP] {ticker} {date}: {reason} ({explanation})")
             continue
-        c["reason_category"] = reason
-        c["reason_explanation"] = explanation
-        c["fy_features"] = fy_feat
-        c["ttm_features"] = ttm_feat
-        c["headlines"] = headlines
-        c["gpt_reason_score"] = CATEGORY_SCORING.get(reason, 0.0)
-        c["fundamental_strength"] = fy_feat.get("eps_yoy", 0) if fy_feat else 0
-        c["recent_earnings_release"] = event_driven
-        enriched.append(c)
-
+        candidate = c.copy()
+        candidate["reason_category"] = reason
+        candidate["reason_explanation"] = explanation
+        candidate["fy_features"] = fy_feat
+        candidate["ttm_features"] = ttm_feat
+        candidate["headlines"] = headlines
+        candidate["gpt_reason_score"] = CATEGORY_SCORING.get(reason, 0.0)
+        candidate["fundamental_strength"] = fy_feat.get("eps_yoy", 0) if fy_feat else 0
+        candidate["recent_earnings_release"] = event_driven
+        enriched.append(candidate)
         if verbose:
             print(f"[PASS] {ticker} {date}: {reason} ({explanation})")
-        # Optional: avoid hitting API rate limits
         if use_gpt:
             time.sleep(GPT_DELAY_SEC)
     return enriched

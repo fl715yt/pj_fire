@@ -1,11 +1,13 @@
-# simulation/logger.py
 """
-Logger utility for PJ Fire simulation (and optionally backtest).
-Supports trade/event logging, warnings, and info messages.
+PJ Fire — Logger utility (PATCHED, FULL TRADE SCHEMA)
+Logs all trade, skip, and rejection events using a unified, structured format.
+Supports info, warning, and debug levels.
 """
 
 from datetime import datetime
 import os
+import json
+
 LOG_USE_EMOJI = os.getenv("PJ_FIRE_LOG_USE_EMOJI", "1") == "1"
 EMOJI_TRADE = "💹" if LOG_USE_EMOJI else "[TRADE]"
 EMOJI_WARN = "⚠️" if LOG_USE_EMOJI else "[WARN]"
@@ -14,26 +16,64 @@ EMOJI_INFO = "ℹ️" if LOG_USE_EMOJI else "[INFO]"
 try:
     from config.config import LOG_PATH
 except ImportError:
-    LOG_PATH = None  # fallback
+    LOG_PATH = None
 
 LOG_LEVEL = os.getenv("PJ_FIRE_LOG_LEVEL", "INFO")  # "DEBUG", "INFO", "WARN", "ERROR"
 
 def _timestamp():
     return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-def log_trade(ticker, side, price, qty, score, date, reason=""):
-    msg = f"[TRADE] {date} {side} {ticker} {qty}@{price} Score:{score} {reason}"
+def log_trade_full(
+    trade_id=None, signal_date=None, buy_date=None, sell_date=None, ticker=None, quantity=None,
+    buy_price=None, sell_price=None, trade_type=None, strategy=None, result=None, pl=None,
+    score=None, normalized_score=None, technicals=None, fundamentals=None, gpt_summary=None, gpt_decision=None,
+    news_url=None, reason=None, take_profit=None, stop_loss=None, extra=None
+):
+    """
+    Unified trade logger for all trade/skipped/rejection events.
+    Any missing fields will be set to None.
+    """
+    record = {
+        "trade_id": trade_id,
+        "signal_date": signal_date,
+        "buy_date": buy_date,
+        "sell_date": sell_date,
+        "ticker": ticker,
+        "quantity": quantity,
+        "buy_price": buy_price,
+        "sell_price": sell_price,
+        "trade_type": trade_type,
+        "strategy": strategy,
+        "result": result,
+        "pl": pl,
+        "score": score,
+        "normalized_score": normalized_score,
+        "technicals": technicals,
+        "fundamentals": fundamentals,
+        "gpt_summary": gpt_summary,
+        "gpt_decision": gpt_decision,
+        "news_url": news_url,
+        "reason": reason,
+        "take_profit": take_profit,
+        "stop_loss": stop_loss,
+        "logged_at": _timestamp()
+    }
+    # Merge in any extra fields
+    if extra and isinstance(extra, dict):
+        record.update(extra)
+    # Print and log as JSON line for structure and downstream parsing
+    msg = f"{EMOJI_TRADE} {json.dumps(record, ensure_ascii=False)}"
     print(msg)
     _log_to_file(msg)
 
 def log_warning(msg):
-    text = f"[WARN] {_timestamp()} ⚠️ {msg}"
+    text = f"{EMOJI_WARN} {_timestamp()} {msg}"
     print(text)
     _log_to_file(text)
 
 def log_info(msg):
     if LOG_LEVEL in ("DEBUG", "INFO"):
-        text = f"[INFO] {_timestamp()} ℹ️ {msg}"
+        text = f"{EMOJI_INFO} {_timestamp()} {msg}"
         print(text)
         _log_to_file(text)
 
@@ -45,7 +85,6 @@ def _log_to_file(msg):
         except Exception:
             pass  # Fail silently if logging fails
 
-# Optionally add a debug function
 def log_debug(msg):
     if LOG_LEVEL == "DEBUG":
         text = f"[DEBUG] {_timestamp()} {msg}"

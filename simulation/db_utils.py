@@ -1,6 +1,7 @@
 """
-PJ Fire — Database Utilities
+PJ Fire — Database Utilities (PATCHED, CASH-LOGIC AUDITED)
 Handles DB connection and all table setup, using config-defined paths and schema.
+No duplicate or conflicting cash/portfolio logic.
 """
 
 import sqlite3
@@ -9,6 +10,7 @@ from datetime import datetime
 from config.config import (
     SIM_DB_FILE,
     BT_DB_FILE,
+    START_CASH,    # PATCH: Use only START_CASH from config, never DEFAULT_CASH
 )
 
 def get_conn(db_path=None):
@@ -35,8 +37,8 @@ def init_pjfire_tables(conn):
     c.execute("""
         CREATE TABLE IF NOT EXISTS fundamentals (
             ticker TEXT,
-            period_type TEXT,      -- e.g., "FY", "1Q", "2Q", "3Q", "4Q"
-            period_end DATE,       -- End date of the fiscal or quarterly period
+            period_type TEXT,
+            period_end DATE,
             revenue REAL,
             eps REAL,
             profit REAL,
@@ -103,14 +105,10 @@ def get_prices(conn, ticker, start_date=None, end_date=None):
         query += " AND date <= ?"
         params.append(end_date)
     df = pd.read_sql(query, conn, params=params)
-    # Always ensure 'date' is a column, not index
     return df
 
 def get_fundamentals(conn, ticker, period_type="FY", n=5):
-    """
-    Fetches up to n most recent fundamentals for a given ticker and period type.
-    period_type: "FY" (annual) or "1Q"/"2Q"/"3Q"/"4Q" (quarterly)
-    """
+    """Fetches up to n most recent fundamentals for a given ticker and period type."""
     query = """
     SELECT * FROM fundamentals
     WHERE ticker = ?
@@ -120,11 +118,9 @@ def get_fundamentals(conn, ticker, period_type="FY", n=5):
     """
     df = pd.read_sql(query, conn, params=[ticker, period_type, n])
     return df
-    
+
 def get_quarterly_fundamentals(conn, ticker, n=4):
-    """
-    Fetches up to n most recent quarterly (1Q–4Q) reports for a given ticker.
-    """
+    """Fetches up to n most recent quarterly (1Q–4Q) reports for a given ticker."""
     query = """
     SELECT * FROM fundamentals
     WHERE ticker = ?
@@ -136,23 +132,31 @@ def get_quarterly_fundamentals(conn, ticker, n=4):
     return df
 
 def get_cash(conn):
-    """Fetch the latest cash balance from the cash table."""
+    """Fetch the latest cash balance from the cash table. If empty, initialize with START_CASH."""
     query = "SELECT balance FROM cash ORDER BY as_of DESC LIMIT 1"
     cur = conn.cursor()
     cur.execute(query)
     row = cur.fetchone()
-    return float(row[0]) if row else 0.0
+    if row:
+        return float(row[0])
+    else:
+        # PATCH: Initialize with START_CASH and today's date
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cur.execute("INSERT INTO cash (as_of, balance) VALUES (?, ?)", (now, float(START_CASH)))
+        conn.commit()
+        return float(START_CASH)
 
 def update_cash(conn, delta):
     """
     Update the cash balance by a delta (positive or negative).
     Appends a new record with the current timestamp as 'as_of'.
+    Ensures unique as_of values (microseconds appended).
     """
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")  # PATCH: microseconds for unique PK
     cur = conn.cursor()
     cur.execute("SELECT balance FROM cash ORDER BY as_of DESC LIMIT 1")
     row = cur.fetchone()
-    prev = float(row[0]) if row else 0.0
+    prev = float(row[0]) if row else float(START_CASH)
     new_balance = prev + delta
     cur.execute("INSERT INTO cash (as_of, balance) VALUES (?, ?)", (now, new_balance))
     conn.commit()

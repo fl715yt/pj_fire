@@ -48,7 +48,6 @@ LOG_PATH                   = str(Path("logs") / "pj_fire.log")
 #  Strategy/Scoring Constants
 # ----------------------------------------------------------------------
 DEFAULT_LOT_SIZE           = 100            # shares per trade
-DEFAULT_CASH               = 1_000_000      # starting balance for new sim accounts
 LOT_UNIT_SIZE              = 100            # Minimum unit for TSE stocks
 MIN_TRADE_AMOUNT           = 10_000         # ¥ — ignore micro signals
 FORCED_EXIT_THRESHOLD      = 0.07           # ≥ 7 % score gap ⇒ forced exit
@@ -88,8 +87,8 @@ DRAWDOWN_STOP_THRESHOLD    = 0.10           # 10 % DD ⇒ pause new trades
 # ----------------------------------------------------------------------
 #  Exit rules
 # ----------------------------------------------------------------------
-TAKE_PROFIT_PCT            = 0.05           # +5 % TP
-STOP_LOSS_PCT              = -0.03          # –3 % SL
+# TAKE_PROFIT_PCT            = 0.05           # +5 % TP
+STOP_LOSS_PCT              = 0.03          # –3 % SL
 MAX_HOLDING_DAYS          = 3             # max days to hold a position
 
 # ----------------------------------------------------------------------
@@ -111,7 +110,7 @@ TRADING_CALENDAR_ENDPOINT  = f"{JQ_BASE_URL}/markets/trading_calendar"
 #  Project metadata / UX
 # ----------------------------------------------------------------------
 PROJECT_NAME               = "PJ Fire"
-LINE_BOT_NAME              = "PJ Fire シミュレータ"
+LINE_BOT_NAME              = "Signav シミュレータ"
 VERSION                    = "1.0.0"
 LINE_RICH_MENU_STYLE       = "compact"
 LINE_LANGUAGE              = "ja"

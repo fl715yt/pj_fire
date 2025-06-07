@@ -1,9 +1,9 @@
 """
-PJ Fire — Canonical Simulation Engine (Unified, Config-Driven)
+PJ Fire — Canonical Simulation Engine (Unified, Config-Driven, PATCHED)
 Handles virtual trading, positions, and cash for simulation and backtest.
-- All buy/sell/forced exit logic centralized
-- Logging, portfolio, cash, and trade management
-- Supports both live simulation and batch (backtest) via entrypoints
+All buy/sell/forced exit logic centralized.
+Logging, portfolio, cash, and trade management.
+All config-driven (START_CASH, DEFAULT_LOT_SIZE, etc.).
 """
 
 import pandas as pd
@@ -12,7 +12,7 @@ from datetime import datetime
 from config.config import (
     SIM_DB_FILE, 
     BT_DB_FILE,
-    DEFAULT_CASH, 
+    START_CASH,
     DEFAULT_LOT_SIZE, 
     FORCED_EXIT_THRESHOLD, 
     DRAWDOWN_REDUCE_THRESHOLD, 
@@ -23,7 +23,6 @@ from config.config import (
     MAX_HOLDING_DAYS, 
     LOT_UNIT_SIZE
 )
-
 from simulation.utils import get_next_trading_day
 from simulation.ranker import get_top_signals_for_day
 from simulation.db_utils import init_pjfire_tables, get_prices, get_cash, update_cash, update_portfolio
@@ -32,7 +31,7 @@ PORTFOLIO_TABLE = "portfolio"
 TRADE_LOG_TABLE = "trades"
 CASH_TABLE = "cash"
 
-def init_simulation_db(db_path=SIM_DB_FILE, start_cash=DEFAULT_CASH, start_date=None):
+def init_simulation_db(db_path=SIM_DB_FILE, start_cash=START_CASH, start_date=None):
     """
     Ensures all tables exist and cash is initialized in the chosen DB.
     Use db_path=BT_DB_FILE for backtest, SIM_DB_FILE for simulation.
@@ -78,7 +77,7 @@ def execute_next_day_buy(conn, signal, qty=DEFAULT_LOT_SIZE):
         print(f"[SKIP] Missing MA5 for {ticker} on {date}.")
         return False, next_date, next_open
     if next_open <= ma5 * (1 - ENTRY_BUFFER) and next_open >= close_price * (1 - GAP_DOWN_LIMIT):
-        executed = execute_buy(conn, ticker, next_open, qty, signal.get("score", 0), next_date)
+        executed = execute_buy(conn, ticker, next_open, qty, signal.get("score", 0), next_date, strategy=signal.get("strategy", "main"))
         return executed, next_date, next_open
     print(f"[SKIP] Entry criteria not met for {ticker} on {next_date} (open {next_open}).")
     return False, next_date, next_open
@@ -87,48 +86,44 @@ def execute_buy(conn, ticker, price, qty, signal_score, date, strategy="main"):
     cash = get_cash(conn)
     total_cost = price * qty
     if cash < total_cost:
-        print(f"[SIM] Insufficient cash to buy {ticker}."
-              f"need {total_cost:.0f}, have {cash:.0f}. Skipping buy.")
+        print(f"[SIM] Insufficient cash to buy {ticker}. Need {total_cost:.0f}, have {cash:.0f}. Skipping buy.")
+        log_trade_event(conn, ticker, "SKIPPED_NO_CASH", price, qty, signal_score, date, strategy, reason="Insufficient cash")
         return False
-    c = conn.cursor()
-    c.execute(f"""
-        INSERT OR REPLACE INTO {PORTFOLIO_TABLE} (ticker, entry_date, quantity, entry_price, status, strategy, signal_score)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (ticker, date, qty, price, "open", strategy, signal_score))
+    update_portfolio(conn, ticker, date, qty, price, "open", strategy, signal_score)
     update_cash(conn, -qty * price)
-    log_trade(conn, ticker, "BUY", price, qty, signal_score, date, strategy=strategy)
-    conn.commit()  # <---- Commit after logging the trade
+    log_trade_event(conn, ticker, "BUY", price, qty, signal_score, date, strategy, reason="Buy executed")
     print(f"[SIM] Bought {qty}x {ticker} at {price} on {date}.")
     return True
 
 def execute_sell(conn, ticker, price, date, reason="NormalExit"):
     c = conn.cursor()
-    c.execute(f"SELECT quantity, entry_price FROM {PORTFOLIO_TABLE} WHERE ticker = ? AND status = 'open'", (ticker,))
+    c.execute(f"SELECT quantity, entry_price, strategy, signal_score FROM {PORTFOLIO_TABLE} WHERE ticker = ? AND status = 'open'", (ticker,))
     row = c.fetchone()
     if not row:
         print(f"[SIM] No position to sell for {ticker}.")
         return False
-    qty, entry_price = row
-    cash = get_cash(conn)
+    qty, entry_price, strategy, signal_score = row
     update_cash(conn, qty * price)
     c.execute(f"UPDATE {PORTFOLIO_TABLE} SET status = 'closed' WHERE ticker = ? AND status = 'open'", (ticker,))
-    log_trade(conn, ticker, "SELL", price, qty, 0, date, reason=reason)
-    conn.commit()  # <---- Commit after logging the trade
+    log_trade_event(conn, ticker, "SELL", price, qty, signal_score, date, strategy, reason=reason, entry_price=entry_price)
     print(f"[SIM] Sold {qty}x {ticker} at {price} on {date}. Reason: {reason}")
+    conn.commit()
     return True
 
-def log_trade(conn, ticker, side, price, qty, signal_score, date, reason="", strategy="main"):
+def log_trade_event(conn, ticker, side, price, qty, signal_score, date, strategy="main", reason="", entry_price=None):
     cur = conn.cursor()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # PATCH: add all required fields, even if placeholder/None (schema-unified)
     cur.execute(f"""
-        INSERT INTO {TRADE_LOG_TABLE} (datetime, ticker, quantity, price, trade_type, strategy, reason)
+        INSERT INTO {TRADE_LOG_TABLE} 
+        (datetime, ticker, quantity, price, trade_type, strategy, reason)
         VALUES (?, ?, ?, ?, ?, ?, ?)
     """, (now, ticker, qty, price, side, strategy, reason))
     conn.commit()
 
 def get_dynamic_lot_size(conn):
-    # Example logic: halve size after 5% drawdown, stop after 10%
-    initial_cash = DEFAULT_CASH  # import this from config
+    # PATCH: always uses START_CASH as baseline
+    initial_cash = START_CASH
     cash = get_cash(conn)
     drawdown = (initial_cash - cash) / initial_cash
     if drawdown >= DRAWDOWN_STOP_THRESHOLD:
@@ -177,94 +172,131 @@ def run_simulation_for_day(candidates, date, db_path=SIM_DB_FILE):
     """
     conn = sqlite3.connect(db_path)
     init_pjfire_tables(conn)
-    # --- 1. Get top signals
     ranked = get_top_signals_for_day(candidates)
     print(f"Top signals for {date}:")
     for sig in ranked:
         print(sig)
-    # --- 2. Forced exit check
     forced_exit_logic(conn, ranked)
-    # --- 3. Time-based exits
     time_exit_logic(conn, date)
-    # --- 3. Execute new buys on next day's open
     for sig in ranked:
         _ = execute_next_day_buy(conn, sig)
     conn.close()
 
 def simulate_trade_for_backtest(
-    conn, signal, entry_date, trading_days,
+    conn, signal, signal_date, trading_days,
     return_result=False, execute_trade=False
 ):
     """
     Simulates a single trade.
-    If execute_trade=True, updates cash/portfolio in DB.
-    Always returns result, P/L, entry date, entry price.
+    - Entry: next day open after signal
+    - If open gaps through TP or SL, SKIP trade.
+    - If SL > TP, SKIP trade.
+    - Exit: TP/SL/timeout as before.
+    Returns: result, pl, entry_date, entry_price, exit_date, exit_price, quantity
     """
     ticker = signal["ticker"]
 
-    # 1. Get open price for entry date
-    prices = get_prices(conn, ticker, start_date=entry_date, end_date=entry_date)
-    if prices.empty:
+    # === 1. Entry on next trading day's open ===
+    next_entry_date = get_next_trading_day(signal_date, trading_days, 1)
+    if not next_entry_date:
         if return_result:
-            return "NO_ENTRY_PRICE", 0, entry_date, None
+            return "NO_NEXT_ENTRY_DATE", 0, None, None, None, None, 0
         else:
             return
 
-    entry_price = prices["open"].iloc[0]
-
-    # 2. Determine max quantity (dynamic sizing by available cash and lot unit)
-    cash = get_cash(conn)
-    max_lots = int(cash // (entry_price * LOT_UNIT_SIZE))
-    quantity = max_lots * LOT_UNIT_SIZE
-    if quantity == 0:
+    entry_prices = get_prices(conn, ticker, start_date=next_entry_date, end_date=next_entry_date)
+    if entry_prices.empty:
         if return_result:
-            return "NO_CASH", 0, entry_date, entry_price
+            return "NO_ENTRY_PRICE", 0, next_entry_date, None, None, None, 0
         else:
             return
 
-    target_tp = signal["ma5"]
+    entry_price = entry_prices["open"].iloc[0]
+    entry_date = next_entry_date
+
+    target_tp = signal.get("ma5")
     stop_loss = entry_price * (1 - STOP_LOSS_PCT)
     max_holding = MAX_HOLDING_DAYS
+
+    # === SKIP: If SL > TP, don't enter ===
+    if stop_loss > target_tp:
+        if return_result:
+            return "SKIPPED_INVALID_SL_GT_TP", 0, entry_date, entry_price, None, None, 0
+        else:
+            return
+
+    # === PRE-ENTRY: If open already gapped through TP or SL, SKIP this trade ===
+    if entry_price <= stop_loss:
+        if return_result:
+            return "SKIPPED_GAP_AT_OPEN_SL", 0, entry_date, entry_price, None, None, 0
+        else:
+            return
+    if entry_price >= target_tp:
+        if return_result:
+            return "SKIPPED_GAP_AT_OPEN_TP", 0, entry_date, entry_price, None, None, 0
+        else:
+            return
+
+    # 2. Set quantity
+    if execute_trade:
+        cash = get_cash(conn)
+        max_lots = int(cash // (entry_price * LOT_UNIT_SIZE))
+        quantity = max_lots * LOT_UNIT_SIZE
+        if quantity == 0:
+            if return_result:
+                return "NO_CASH", 0, entry_date, entry_price, None, None, 0
+            else:
+                return
+    else:
+        quantity = DEFAULT_LOT_SIZE
 
     result = "TIMEOUT"
     exit_price = None
     exit_date = None
 
-    # 3. Simulate each day in holding period
-    for offset in range(1, max_holding + 1):
-        current_date = get_next_trading_day(entry_date, trading_days, offset)
-        if not current_date:
+    # === 3. Simulate holding days ===
+    for offset in range(0, max_holding):
+        check_date = get_next_trading_day(entry_date, trading_days, offset)
+        if not check_date:
             break
-        day_prices = get_prices(conn, ticker, start_date=current_date, end_date=current_date)
+        day_prices = get_prices(conn, ticker, start_date=check_date, end_date=check_date)
         if day_prices.empty:
             continue
-        high = day_prices["high"].iloc[0]
-        low = day_prices["low"].iloc[0]
-        close = day_prices["close"].iloc[0]
-        # Take profit hit
-        if high >= target_tp:
-            exit_price = target_tp
-            exit_date = current_date
-            result = "TP"
-            break
-        # Stop loss hit
-        if low <= stop_loss:
-            exit_price = stop_loss
-            exit_date = current_date
+        o = day_prices["open"].iloc[0]
+        h = day_prices["high"].iloc[0]
+        l = day_prices["low"].iloc[0]
+        c = day_prices["close"].iloc[0]
+        # Intraday exits as before:
+        sl_hit = l <= stop_loss
+        tp_hit = h >= target_tp
+        if sl_hit and tp_hit:
+            exit_price = stop_loss  # Conservative: SL first
+            exit_date = check_date
             result = "SL"
             break
-        # Save close for TIMEOUT exit
-        exit_price = close
-        exit_date = current_date
+        elif sl_hit:
+            exit_price = stop_loss
+            exit_date = check_date
+            result = "SL"
+            break
+        elif tp_hit:
+            exit_price = target_tp
+            exit_date = check_date
+            result = "TP"
+            break
+        # Not hit: mark as last close (for TIMEOUT exit)
+        exit_price = c
+        exit_date = check_date
 
-    # 4. Timeout exit: exit at close of last day if TP/SL not hit
     pl = (exit_price - entry_price) * quantity if exit_price is not None else 0
 
     # 5. If real trade, update cash/portfolio
     if execute_trade and exit_price is not None:
         update_cash(conn, -quantity * entry_price)
         update_portfolio(conn, ticker, entry_date, quantity, entry_price, "OPEN", signal.get("strategy", "mean_reversion"), signal.get("score", 0))
-
+        update_cash(conn, quantity * exit_price)
+        update_portfolio(conn, ticker, entry_date, quantity, entry_price, "CLOSED", signal.get("strategy", "mean_reversion"), signal.get("score", 0))
+        log_trade_event(conn, ticker, "SELL", exit_price, quantity, signal.get("score", 0), exit_date, signal.get("strategy", "mean_reversion"), reason=result, entry_price=entry_price)
 
     if return_result:
-        return result, pl, entry_date, entry_price
+        return result, pl, entry_date, entry_price, exit_date, exit_price, quantity
