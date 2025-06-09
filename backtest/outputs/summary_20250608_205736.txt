@@ -1,0 +1,7 @@
+==== BACKTEST SUMMARY (20250608_205736) ====
+Total trades: 636
+Win rate (TP): 3.46%
+Final P/L: -716997 yen
+Ending cash: 283,003 yen
+TRUE FINAL EQUITY: 52,192,463 yen
+  (includes market value of all open positions)

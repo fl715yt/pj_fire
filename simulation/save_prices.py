@@ -53,7 +53,7 @@ def get_latest_date_for_ticker(conn, ticker):
     row = cur.fetchone()
     return row[0] if row and row[0] else None
 
-def fetch_and_save_prices(start_date, end_date, tickers, db_path=SIM_DB_FILE):
+def fetch_and_save_prices(start_date, end_date, tickers, db_path=SIM_DB_FILE, force=False):
     id_token = get_id_token()
     headers = {"Authorization": f"Bearer {id_token}"}
     all_records = []
@@ -65,13 +65,16 @@ def fetch_and_save_prices(start_date, end_date, tickers, db_path=SIM_DB_FILE):
     init_pjfire_tables(conn)
     for idx, code in enumerate(tickers, 1):
         # Find the latest date present in the DB for this ticker
-        latest_date = get_latest_date_for_ticker(conn, code)
-        fetch_start_date = start_date
-        if latest_date:
-            fetch_start_date = (pd.to_datetime(latest_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-            if pd.to_datetime(fetch_start_date) > pd.to_datetime(end_date):
-                print(f"[{idx}/{N}] {code}: Up to date, skipping.")
-                continue
+        if not force:
+            latest_date = get_latest_date_for_ticker(conn, code)
+            fetch_start_date = start_date
+            if latest_date:
+                fetch_start_date = (pd.to_datetime(latest_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+                if pd.to_datetime(fetch_start_date) > pd.to_datetime(end_date):
+                    print(f"[{idx}/{N}] {code}: Up to date, skipping.")
+                    continue
+        else:
+            fetch_start_date = start_date  # Ignore DB and always backfill
         # Build a list of trading days this ticker needs
         needed_days = [d for d in trading_days if fetch_start_date <= d <= end_date]
         if not needed_days:
@@ -117,6 +120,7 @@ if __name__ == "__main__":
     parser.add_argument("--end_date", type=str, default=None, help="YYYY-MM-DD for end of date range (defaults to today)")
     parser.add_argument("--bulk", action="store_true", help="If set, loads for the last 3 months by default")
     parser.add_argument("--db", type=str, choices=["sim", "bt"], default="sim", help="Target DB: sim (default) or bt (backtest)")
+    parser.add_argument("--force", action="store_true", help="Force full backfill, ignore latest date in DB")
     args = parser.parse_args()
 
     tickers = load_topix_tickers()
@@ -132,5 +136,5 @@ if __name__ == "__main__":
     db_path = SIM_DB_FILE if args.db == "sim" else BT_DB_FILE
 
     print(f"[INFO] Loading prices from {start_date} to {end_date} for {len(tickers)} tickers")
-    fetch_and_save_prices(start_date, end_date, tickers, db_path=db_path)
+    fetch_and_save_prices(start_date, end_date, tickers, db_path=db_path, force=args.force)
     print("[FINISHED]")

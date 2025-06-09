@@ -1,10 +1,11 @@
 """
-PJ Fire — Unified Backtest Engine (with full daily stats, unified logging, PATCHED)
-Fixes indentation bug, unifies log schema, never skips logging a trade/skip/reject.
+PJ Fire — Backtest Engine (IR Bank-Driven Reasoning Version)
+Runs full backtest using local IR Bank news DB for GPT-based categorization.
 """
 
 import os
 import pandas as pd
+import sqlite3
 from datetime import datetime
 import matplotlib.pyplot as plt
 import json
@@ -12,7 +13,6 @@ import json
 from config.config import BT_DB_FILE, START_CASH, START_DATE, END_DATE, DEFAULT_LOT_SIZE, STOP_LOSS_PCT
 from simulation.db_utils import get_conn, get_cash, get_prices
 from simulation.screening import screen_stocks 
-from simulation.reasoning import attach_reason_to_candidates
 from simulation.ranker import get_top_signals_for_day
 from simulation.utils import load_trading_days, get_next_trading_day
 from simulation.simulation_engine import (
@@ -23,7 +23,31 @@ from simulation.simulation_engine import (
 )
 from simulation.logger import log_trade_full
 
+from simulation.news_reason_gpt import categorize_reason_with_gpt
+
 TRADING_DAYS = load_trading_days()  # Load ONCE at module startup
+
+def get_irbank_news(conn, ticker, date, window=1):
+    """
+    Returns a list of {'date', 'headline', 'url'} from irbank_news for ticker within ±window days of date.
+    """
+    target_date = pd.to_datetime(date)
+    results = []
+    cur = conn.cursor()
+    ticker_str = str(ticker).rstrip("0")
+    cur.execute(
+        f"SELECT date, headline, url FROM irbank_news WHERE ticker = ?",
+        (ticker_str,)
+    )
+    rows = cur.fetchall()
+    for d, h, u in rows:
+        try:
+            d_obj = pd.to_datetime(d)
+        except Exception:
+            continue
+        if abs((d_obj - target_date).days) <= window:
+            results.append({"date": d, "headline": h, "url": u})
+    return results
 
 def run_backtest_engine(
     start_date=START_DATE, 
@@ -54,7 +78,26 @@ def run_backtest_engine(
             equity_curve.append({"date": date_str, "equity": last_cash})
             continue
 
-        candidates_with_reasons = attach_reason_to_candidates(conn, candidates)
+        # === Attach IR Bank news and GPT reason to each candidate ===
+        for c in candidates:
+            next_entry_date = get_next_trading_day(date_str, TRADING_DAYS, 1)
+            c["irbank_news"] = get_irbank_news(conn, c["ticker"], next_entry_date, window=1)
+            # Compose the text for GPT
+            gpt_input = "\n".join(f"{item['date']} {item['headline']}" for item in c["irbank_news"]) or "No relevant IR news."
+            # Use price_drop_pct if you have it; otherwise, use 0
+            price_drop_pct = c.get("price_drop_pct", 0)
+            category = categorize_reason_with_gpt(
+                ticker=c["ticker"],
+                date=next_entry_date,
+                price_drop_pct=price_drop_pct,
+                headlines=gpt_input
+            )
+            c["reason_category"] = category
+            c["gpt_summary"] = gpt_input if gpt_input != "No relevant IR news." else ""
+            c["gpt_decision"] = ""
+
+        # === Candidate Filtering/Ranking as before ===
+        candidates_with_reasons = candidates  # All now have IR Bank + GPT-based reasons
         if not candidates_with_reasons:
             print("No candidates passed reasoning filter.")
             daily_stats.append({"date": date_str, "n_trades": 0, "n_win": 0, "n_loss": 0, "n_other": 0, "day_pl": 0, "cash": last_cash})
@@ -77,9 +120,8 @@ def run_backtest_engine(
 
         n_win, n_loss, n_other = 0, 0, 0
         day_pl = 0
-
+        
         for sig in ranked_signals:
-            # Get next day open (entry) and calculate lot cost from that entry
             next_entry_date = get_next_trading_day(date_str, TRADING_DAYS, 1)
             entry_prices = get_prices(conn, sig["ticker"], start_date=next_entry_date, end_date=next_entry_date)
             if entry_prices.empty:
@@ -88,16 +130,15 @@ def run_backtest_engine(
             lot_cost = DEFAULT_LOT_SIZE * entry_price
             cash = get_cash(conn)
 
-            # Always simulate "what-if" (virtual) trade, even if not enough cash
+            # 1. Always simulate the what-if trade (even for SKIPPED)
             result, pl, entry_date, buy_price, exit_date, sell_price, quantity = simulate_trade_for_backtest(
                 conn, sig, date_str, TRADING_DAYS, return_result=True, execute_trade=False
             )
-
-            # Compute TP and SL for log
             target_tp = sig.get("ma5")
             stop_loss = buy_price * (1 - STOP_LOSS_PCT) if buy_price is not None else None
             trade_type = "SKIPPED" if result.startswith("SKIPPED") else "BOUGHT"
 
+            # 2. Log everything — all columns for all trades, including “what-if” P/L for skipped trades!
             log_trade_full(
                 trade_id=len(trade_log) + 1,
                 signal_date=date_str,
@@ -117,11 +158,11 @@ def run_backtest_engine(
                 fundamentals=json.dumps(sig.get("fy_features", {})),
                 gpt_summary=sig.get("gpt_summary", ""),
                 gpt_decision=sig.get("gpt_decision", ""),
-                news_url=sig.get("news_url", ""),
+                news_url="",
                 reason=sig.get("reason_category", ""),
+                news_headlines=json.dumps(sig.get("irbank_news", []), ensure_ascii=False),
                 take_profit=target_tp,
                 stop_loss=stop_loss,
-                # logged_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             )
             trade_log.append({
                 "trade_id": len(trade_log) + 1,
@@ -136,25 +177,25 @@ def run_backtest_engine(
                 "strategy": sig.get("strategy", "mean_reversion"),
                 "result": result,
                 "pl": pl,
-                "score": sig.get("normalized_score"),
+                "score": sig.get("score"),
+                "normalized_score": sig.get("normalized_score"),
                 "technicals": json.dumps({k: sig.get(k) for k in ['rsi_14','ma5','ma25','volume','volume_spike']}),
                 "fundamentals": json.dumps(sig.get("fy_features", {})),
                 "gpt_summary": sig.get("gpt_summary", ""),
                 "gpt_decision": sig.get("gpt_decision", ""),
-                "news_url": sig.get("news_url", ""),
+                "news_url": "",
                 "reason": sig.get("reason_category", ""),
-                
+                "news_headlines": json.dumps(sig.get("irbank_news", []), ensure_ascii=False),
                 "take_profit": target_tp,
                 "stop_loss": stop_loss,
                 "logged_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             })
 
+            # 3. Only execute actual trades for non-skipped signals
             if trade_type == "BOUGHT":
-                # Actually execute trade (updates cash, etc.)
                 actual_result, actual_pl, actual_entry_date, actual_entry_price, actual_exit_date, actual_exit_price, actual_qty = simulate_trade_for_backtest(
                     conn, sig, date_str, TRADING_DAYS, return_result=True, execute_trade=True
                 )
-                # Stat tracking
                 if actual_result == "TP":
                     n_win += 1
                 elif actual_result == "SL":
@@ -176,17 +217,17 @@ def run_backtest_engine(
             print("No trades or exits executed today.")
 
     conn.close()
-    # === Output results to CSV for analysis ===
+    # Output results
     df_equity = pd.DataFrame(equity_curve)
     df_trades = pd.DataFrame(trade_log)
     df_stats = pd.DataFrame(daily_stats)
 
     run_tag = datetime.now().strftime('%Y%m%d_%H%M%S')
-
+    output_dir = os.path.abspath(output_dir)
     df_equity.to_csv(os.path.join(output_dir, f"equity_curve_{run_tag}.csv"), index=False)
     df_trades.to_csv(os.path.join(output_dir, f"trades_{run_tag}.csv"), index=False)
     df_stats.to_csv(os.path.join(output_dir, f"daily_stats_{run_tag}.csv"), index=False)
-    print(f"✅ Backtest outputs saved to {output_dir}/ as *_ {run_tag}.csv")
+    print(f"✅ Backtest outputs saved to {output_dir}/ as *_{run_tag}.csv")
 
     n_trades = sum(d["n_trades"] for d in daily_stats)
     n_win = sum(d["n_win"] for d in daily_stats)
@@ -205,7 +246,6 @@ def run_backtest_engine(
     print(df_trades.head())
 
     # === Mark to Market All Open Positions ===
-    # 1. Find all open positions (buys not fully closed by sells)
     df_trades_buys = df_trades[df_trades["trade_type"] == "BOUGHT"]
     df_trades_sells = df_trades[df_trades["trade_type"] == "SELL"]
 
@@ -241,7 +281,6 @@ def run_backtest_engine(
         true_final_equity = final_cash
         print("\n=== TRUE FINAL EQUITY: no open positions, all cash ===")
 
-    # Optionally, save true final equity to a summary file
     with open(os.path.join(output_dir, f"summary_{run_tag}.txt"), "w", encoding="utf-8") as f:
         f.write(f"==== BACKTEST SUMMARY ({run_tag}) ====\n")
         f.write(f"Total trades: {n_trades}\n")

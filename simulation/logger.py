@@ -27,7 +27,7 @@ def log_trade_full(
     trade_id=None, signal_date=None, buy_date=None, sell_date=None, ticker=None, quantity=None,
     buy_price=None, sell_price=None, trade_type=None, strategy=None, result=None, pl=None,
     score=None, normalized_score=None, technicals=None, fundamentals=None, gpt_summary=None, gpt_decision=None,
-    news_url=None, reason=None, take_profit=None, stop_loss=None, extra=None
+    news_url=None, reason=None, news_headlines=None, take_profit=None, stop_loss=None, extra=None
 ):
     """
     Unified trade logger for all trade/skipped/rejection events.
@@ -54,6 +54,7 @@ def log_trade_full(
         "gpt_decision": gpt_decision,
         "news_url": news_url,
         "reason": reason,
+        "news_headlines": news_headlines,
         "take_profit": take_profit,
         "stop_loss": stop_loss,
         "logged_at": _timestamp()

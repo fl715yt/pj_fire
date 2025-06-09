@@ -78,8 +78,16 @@ def init_pjfire_tables(conn):
     conn.commit()
 
 def insert_prices(conn, df):
-    """Insert a DataFrame of daily prices into the unified prices table."""
-    df.to_sql("prices", conn, if_exists="append", index=False)
+    """Insert or update daily prices, avoiding duplicates and ensuring freshest data."""
+    df = df.drop_duplicates(subset=["date", "ticker"])
+    records = df.to_dict(orient="records")
+    cur = conn.cursor()
+    cur.executemany("""
+        INSERT OR REPLACE INTO prices
+        (date, ticker, open, high, low, close, volume)
+        VALUES (:date, :ticker, :open, :high, :low, :close, :volume)
+    """, records)
+    conn.commit()
 
 def insert_fundamentals(conn, df):
     """Insert a DataFrame of fundamentals (FY and/or quarterly) into the table."""

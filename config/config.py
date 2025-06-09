@@ -59,6 +59,9 @@ DROP_PCT_THRESHOLD         = -0.04          # -4% or worse for drop filter
 ENTRY_BUFFER               = 0.005  
 GAP_DOWN_LIMIT             = 0.02
 USE_FUNDAMENTAL_FILTER = os.getenv("PJ_FIRE_USE_FUNDAMENTAL_FILTER", "1") == "1" ## enable fundamental strength filter
+ENABLE_SCORE_FILTER = False  # Set True if you want to filter
+SCORE_FILTER_THRESHOLD = 90
+
 
 WEIGHTS = {
     "price_drop_pct": 3.0,
@@ -171,8 +174,8 @@ MARKET_ETF = "1306"  # TOPIX ETF
 # ----------------------------------------------------------------------
 #  Backtest constants
 # ----------------------------------------------------------------------
-START_DATE = os.getenv("PJ_FIRE_BACKTEST_START", "2025-02-26")
-END_DATE   = os.getenv("PJ_FIRE_BACKTEST_END", "2025-05-24")
+START_DATE = os.getenv("PJ_FIRE_BACKTEST_START", "2023-06-07")
+END_DATE   = os.getenv("PJ_FIRE_BACKTEST_END", "2025-06-07")
 START_CASH = int(os.getenv("PJ_FIRE_START_CASH", 1_000_000))
 
 # ----------------------------------------------------------------------

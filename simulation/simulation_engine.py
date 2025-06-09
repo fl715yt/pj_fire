@@ -21,7 +21,9 @@ from config.config import (
     STOP_LOSS_PCT, 
     GAP_DOWN_LIMIT, 
     MAX_HOLDING_DAYS, 
-    LOT_UNIT_SIZE
+    LOT_UNIT_SIZE,
+    ENABLE_SCORE_FILTER, 
+    SCORE_FILTER_THRESHOLD
 )
 from simulation.utils import get_next_trading_day
 from simulation.ranker import get_top_signals_for_day
@@ -199,63 +201,57 @@ def simulate_trade_for_backtest(
     - If SL > TP, SKIP trade.
     - Exit: TP/SL/timeout as before.
     Returns: result, pl, entry_date, entry_price, exit_date, exit_price, quantity
+    For skipped trades, simulates what would have happened.
     """
     ticker = signal["ticker"]
+    skip_flag = False
+    skip_reason = None
+
     # 0. FY data error exclusion
     if signal.get("fy_features", {}).get("error") == "Not enough FY data":
-        if return_result:
-            return "SKIPPED_NOT_ENOUGH_FY", 0, None, None, None, None, 0
-        else:
-            return
+        skip_flag = True
+        skip_reason = "SKIPPED_NOT_ENOUGH_FY"
 
     # 1. Reason filter
-    if signal.get("reason_category") != "no_news":
-        if return_result:
-            return "SKIPPED_REASON", 0, None, None, None, None, 0
-        else:
-            return
+    elif signal.get("reason_category") != "no_news":
+        skip_flag = True
+        skip_reason = "SKIPPED_REASON"
 
     # 2. Score filter
-    if signal.get("normalized_score", 0) < 90:
-        if return_result:
-            return "SKIPPED_LOW_SCORE", 0, None, None, None, None, 0
-        else:
-            return
+    elif ENABLE_SCORE_FILTER and signal.get("normalized_score", 0) < SCORE_FILTER_THRESHOLD:
+        skip_flag = True
+        skip_reason = "SKIPPED_LOW_SCORE"
 
-    # 3. Slightly_bad_news filter (in case of wrong reason assignment)
-    if signal.get("reason_category") == "slightly_bad_news":
-        if return_result:
-            return "SKIPPED_BAD_NEWS", 0, None, None, None, None, 0
-        else:
-            return
+    # 3. Slightly_bad_news filter
+    elif signal.get("reason_category") == "slightly_bad_news":
+        skip_flag = True
+        skip_reason = "SKIPPED_BAD_NEWS"
 
     # 4. Green candle on day N-1 (yesterday)
-    idx = trading_days.index(signal_date) if signal_date in trading_days else None
-    if idx is None or idx == 0:
-        if return_result:
-            return "SKIPPED_NO_PREV_DAY", 0, None, None, None, None, 0
+    else:
+        idx = trading_days.index(signal_date) if signal_date in trading_days else None
+        if idx is None or idx == 0:
+            skip_flag = True
+            skip_reason = "SKIPPED_NO_PREV_DAY"
         else:
-            return
-    prev_day = trading_days[idx - 1]
-    prev_prices = get_prices(conn, ticker, start_date=prev_day, end_date=prev_day)
-    if prev_prices.empty or prev_prices["close"].iloc[0] <= prev_prices["open"].iloc[0]:
-        if return_result:
-            return "SKIPPED_NO_GREEN_CANDLE", 0, None, None, None, None, 0
-        else:
-            return
+            prev_day = trading_days[idx - 1]
+            prev_prices = get_prices(conn, ticker, start_date=prev_day, end_date=prev_day)
+            if prev_prices.empty or prev_prices["close"].iloc[0] <= prev_prices["open"].iloc[0]:
+                skip_flag = True
+                skip_reason = "SKIPPED_NO_GREEN_CANDLE"
 
-    # === 5. Entry on next trading day's open ===
+    # === Now always simulate entry and exit (as if entered) ===
     next_entry_date = get_next_trading_day(signal_date, trading_days, 1)
     if not next_entry_date:
         if return_result:
-            return "NO_NEXT_ENTRY_DATE", 0, None, None, None, None, 0
+            return skip_reason or "NO_NEXT_ENTRY_DATE", 0, None, None, None, None, 0
         else:
             return
 
     entry_prices = get_prices(conn, ticker, start_date=next_entry_date, end_date=next_entry_date)
     if entry_prices.empty:
         if return_result:
-            return "NO_ENTRY_PRICE", 0, next_entry_date, None, None, None, 0
+            return skip_reason or "NO_ENTRY_PRICE", 0, next_entry_date, None, None, None, 0
         else:
             return
 
@@ -266,24 +262,18 @@ def simulate_trade_for_backtest(
     stop_loss = entry_price * (1 - STOP_LOSS_PCT)
     max_holding = MAX_HOLDING_DAYS
 
-    # === 6. SKIP: If SL > TP, don't enter ===
+    # SKIP: If SL > TP, don't enter
     if stop_loss > target_tp:
-        if return_result:
-            return "SKIPPED_INVALID_SL_GT_TP", 0, entry_date, entry_price, None, None, 0
-        else:
-            return
+        skip_flag = True
+        skip_reason = skip_reason or "SKIPPED_INVALID_SL_GT_TP"
 
-    # === 7. PRE-ENTRY: If open already gapped through TP or SL, SKIP this trade ===
+    # PRE-ENTRY: If open already gapped through TP or SL, SKIP this trade
     if entry_price <= stop_loss:
-        if return_result:
-            return "SKIPPED_GAP_AT_OPEN_SL", 0, entry_date, entry_price, None, None, 0
-        else:
-            return
-    if entry_price >= target_tp:
-        if return_result:
-            return "SKIPPED_GAP_AT_OPEN_TP", 0, entry_date, entry_price, None, None, 0
-        else:
-            return
+        skip_flag = True
+        skip_reason = skip_reason or "SKIPPED_GAP_AT_OPEN_SL"
+    elif entry_price >= target_tp:
+        skip_flag = True
+        skip_reason = skip_reason or "SKIPPED_GAP_AT_OPEN_TP"
 
     # 8. Set quantity
     if execute_trade:
@@ -292,7 +282,7 @@ def simulate_trade_for_backtest(
         quantity = max_lots * LOT_UNIT_SIZE
         if quantity == 0:
             if return_result:
-                return "NO_CASH", 0, entry_date, entry_price, None, None, 0
+                return skip_reason or "NO_CASH", 0, entry_date, entry_price, None, None, 0
             else:
                 return
     else:
@@ -302,7 +292,7 @@ def simulate_trade_for_backtest(
     exit_price = None
     exit_date = None
 
-    # === 9. Simulate holding days ===
+    # 9. Simulate holding days
     for offset in range(0, max_holding):
         check_date = get_next_trading_day(entry_date, trading_days, offset)
         if not check_date:
@@ -314,11 +304,10 @@ def simulate_trade_for_backtest(
         h = day_prices["high"].iloc[0]
         l = day_prices["low"].iloc[0]
         c = day_prices["close"].iloc[0]
-        # Intraday exits as before:
         sl_hit = l <= stop_loss
         tp_hit = h >= target_tp
         if sl_hit and tp_hit:
-            exit_price = stop_loss  # Conservative: SL first
+            exit_price = stop_loss
             exit_date = check_date
             result = "SL"
             break
@@ -332,7 +321,6 @@ def simulate_trade_for_backtest(
             exit_date = check_date
             result = "TP"
             break
-        # Not hit: mark as last close (for TIMEOUT exit)
         exit_price = c
         exit_date = check_date
 
@@ -346,5 +334,7 @@ def simulate_trade_for_backtest(
         update_portfolio(conn, ticker, entry_date, quantity, entry_price, "CLOSED", signal.get("strategy", "mean_reversion"), signal.get("score", 0))
         log_trade_event(conn, ticker, "SELL", exit_price, quantity, signal.get("score", 0), exit_date, signal.get("strategy", "mean_reversion"), reason=result, entry_price=entry_price)
 
+    # === Final result: use SKIPPED_* as result if skip_flag, otherwise true simulation result ===
+    final_result = skip_reason if skip_flag else result
     if return_result:
-        return result, pl, entry_date, entry_price, exit_date, exit_price, quantity
+        return final_result, pl, entry_date, entry_price, exit_date, exit_price, quantity
