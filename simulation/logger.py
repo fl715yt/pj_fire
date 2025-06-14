@@ -25,7 +25,7 @@ def _timestamp():
 
 def log_trade_full(
     trade_id=None, signal_date=None, buy_date=None, sell_date=None, ticker=None, quantity=None,
-    buy_price=None, sell_price=None, trade_type=None, strategy=None, result=None, pl=None,
+    buy_price=None, sell_price=None, trade_type=None, strategy=None, regime=None, result=None, pl=None,
     score=None, normalized_score=None, technicals=None, fundamentals=None, gpt_summary=None, gpt_decision=None,
     news_url=None, reason=None, news_headlines=None, take_profit=None, stop_loss=None, extra=None
 ):
@@ -44,6 +44,7 @@ def log_trade_full(
         "sell_price": sell_price,
         "trade_type": trade_type,
         "strategy": strategy,
+        "regime": regime,
         "result": result,
         "pl": pl,
         "score": score,

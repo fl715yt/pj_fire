@@ -12,8 +12,8 @@ import json
 
 from config.config import BT_DB_FILE, START_CASH, START_DATE, END_DATE, DEFAULT_LOT_SIZE, STOP_LOSS_PCT
 from simulation.db_utils import get_conn, get_cash, get_prices
-from simulation.screening import screen_stocks 
-from simulation.ranker import get_top_signals_for_day
+from strategies.common.screening import screen_stocks 
+from strategies.common.ranker import get_top_signals_for_day
 from simulation.utils import load_trading_days, get_next_trading_day
 from simulation.simulation_engine import (
     simulate_trade_for_backtest,

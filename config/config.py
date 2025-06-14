@@ -174,7 +174,8 @@ MARKET_ETF = "1306"  # TOPIX ETF
 # ----------------------------------------------------------------------
 #  Backtest constants
 # ----------------------------------------------------------------------
-START_DATE = os.getenv("PJ_FIRE_BACKTEST_START", "2023-06-07")
+# START_DATE = os.getenv("PJ_FIRE_BACKTEST_START", "2023-06-01")
+START_DATE = os.getenv("PJ_FIRE_BACKTEST_START", "2025-05-24") # temporary for testing
 END_DATE   = os.getenv("PJ_FIRE_BACKTEST_END", "2025-06-07")
 START_CASH = int(os.getenv("PJ_FIRE_START_CASH", 1_000_000))
 
@@ -186,3 +187,21 @@ if __name__ != "config.config":
         "Import constants via `from config.config import X`, "
         "not by copying this file or re-naming it."
     )
+
+# ----------------------------------------------------------------------
+#  Supported strategies and regimes (for multi-strategy support)
+# ----------------------------------------------------------------------
+STRATEGIES = [
+    "mean_reversion",
+    "momentum",  # Add more here in future
+]
+
+REGIMES = [
+    "bull",
+    "bear",
+    "volatile",
+    "stable",
+    "sector_up",
+    "sector_down",
+    "default",
+]

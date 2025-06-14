@@ -54,7 +54,8 @@ def init_pjfire_tables(conn):
             status TEXT,
             strategy TEXT,
             signal_score REAL,
-            PRIMARY KEY (ticker, entry_date)
+            regime TEXT,
+            PRIMARY KEY (ticker, entry_date, strategy, regime)
         )
     """)
     c.execute("""
@@ -66,6 +67,7 @@ def init_pjfire_tables(conn):
             price REAL,
             trade_type TEXT,
             strategy TEXT,
+            regime TEXT,
             reason TEXT
         )
     """)
@@ -170,18 +172,14 @@ def update_cash(conn, delta):
     conn.commit()
     return new_balance
 
-
-def update_portfolio(conn, ticker, entry_date, quantity, entry_price, status, strategy, signal_score):
-    """
-    Insert or update a position in the portfolio table.
-    Status: 'OPEN' or 'CLOSED'
-    """
+def update_portfolio(conn, ticker, entry_date, quantity, entry_price, status, strategy, signal_score, regime):
     cur = conn.cursor()
     cur.execute("""
         INSERT OR REPLACE INTO portfolio
-            (ticker, entry_date, quantity, entry_price, status, strategy, signal_score)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+            (ticker, entry_date, quantity, entry_price, status, strategy, signal_score, regime)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (ticker, entry_date, quantity, entry_price, status, strategy, signal_score)
+        (ticker, entry_date, quantity, entry_price, status, strategy, signal_score, regime)
     )
     conn.commit()
+

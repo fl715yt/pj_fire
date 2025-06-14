@@ -55,16 +55,21 @@ def rank_candidates(candidates: List[Dict[str, Any]], top_n: int = None) -> List
     ranked = sorted(filtered, key=lambda x: x['score'], reverse=True)[:top_n]
     return ranked
 
-def get_top_signals_for_day(candidates: List[Dict[str, Any]], strategy: str = 'mean_reversion') -> List[Dict[str, Any]]:
+def get_top_signals_for_day(
+    candidates: List[Dict[str, Any]], 
+    strategy: str = None,
+    regime: str = None
+) -> List[Dict[str, Any]]:
     """
     Returns the top signals to execute for the day, after all scoring/ranking.
     If both TOP_N_RANK and MAX_SIGNAL_PER_DAY are set, the smaller value is enforced.
+    Propagates strategy/regime to output for downstream modules.
     """
     limit = min(TOP_N_RANK, MAX_SIGNAL_PER_DAY)
     ranked = rank_candidates(candidates, top_n=limit)
-    # Add strategy field for downstream tracking/logging
     for c in ranked:
-        c["strategy"] = strategy
+        if strategy:
+            c["strategy"] = strategy
+        if regime:
+            c["regime"] = regime
     return ranked
-
-# No demo/test block, no unused scoring weights, no magic numbers.

@@ -1,0 +1,3179 @@
+config/config.py
+"""
+PJ Fire — Centralized Configuration Module
+
+* Holds **all** constants, thresholds, mappings, and paths for every PJ Fire component.
+* Contains **no** business logic or side-effects; just import what you need.
+* Secrets come from .env; codebase stays credentials-free.
+"""
+
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# ----------------------------------------------------------------------
+#  Environment bootstrap
+# ----------------------------------------------------------------------
+load_dotenv()  # ensures .env variables are loaded
+
+# ----------------------------------------------------------------------
+#  Secrets
+# ----------------------------------------------------------------------
+OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY")
+JQUANTS_EMAIL     = os.getenv("JQUANTS_EMAIL")
+JQUANTS_PASSWORD  = os.getenv("JQUANTS_PASSWORD")
+GOOGLE_API_KEY    = os.getenv("GOOGLE_API_KEY")
+GOOGLE_CSE_ID     = os.getenv("GOOGLE_CSE_ID")
+
+# ----------------------------------------------------------------------
+#  Database locations (strict separation ⇒ no cross-contamination)
+# ----------------------------------------------------------------------
+SIM_DB_FILE: str = os.getenv(
+    "PJ_FIRE_SIM_DB",
+    str(Path("simulation") / "pjfire.db"),
+)
+BT_DB_FILE: str = os.getenv(
+    "PJ_FIRE_BT_DB",
+    str(Path("backtest") / "backtest_bt.db"),
+)
+
+# ----------------------------------------------------------------------
+#  Data files & universe
+# ----------------------------------------------------------------------
+UNIVERSE_CSV               = os.getenv("PJ_FIRE_UNIVERSE_CSV", "topix_company_list.csv")
+VARIANT_CSV                = os.getenv("PJ_FIRE_VARIANT_CSV", "topix_company_list.csv")
+TRADING_CALENDAR_CSV       = os.getenv("PJ_FIRE_CALENDAR_CSV", "trading_calendar.csv")
+LOG_PATH                   = str(Path("logs") / "pj_fire.log")
+
+# ----------------------------------------------------------------------
+#  Strategy/Scoring Constants
+# ----------------------------------------------------------------------
+DEFAULT_LOT_SIZE           = 100            # shares per trade
+LOT_UNIT_SIZE              = 100            # Minimum unit for TSE stocks
+MIN_TRADE_AMOUNT           = 10_000         # ¥ — ignore micro signals
+FORCED_EXIT_THRESHOLD      = 0.07           # ≥ 7 % score gap ⇒ forced exit
+TOP_N_RANK                 = 10             # candidates forwarded to signal stage
+MAX_SIGNAL_PER_DAY         = 5              # UX guard-rail
+MIN_VOLUME                 = 50_000         # minimum daily volume for screening
+RSI_THRESHOLD              = 30             # default RSI filter
+DROP_PCT_THRESHOLD         = -0.04          # -4% or worse for drop filter
+ENTRY_BUFFER               = 0.005  
+GAP_DOWN_LIMIT             = 0.02
+USE_FUNDAMENTAL_FILTER = os.getenv("PJ_FIRE_USE_FUNDAMENTAL_FILTER", "1") == "1" ## enable fundamental strength filter
+ENABLE_SCORE_FILTER = False  # Set True if you want to filter
+SCORE_FILTER_THRESHOLD = 90
+
+
+WEIGHTS = {
+    "price_drop_pct": 3.0,
+    "gpt_reason_score": 2.0,
+    "fundamental_strength": 1.5,
+    "volume_spike": 1.0,
+    # add more if needed
+}
+
+SCORE_CUTOFF = 0.0  # Minimum score for signal consideration
+
+CATEGORY_SCORING = {
+    "misinterpreted_news": 1.2,
+    "slightly_bad_news": 0.7,
+    "very_bad_news": 0.0,
+    "no_news": 1.1,
+    "macro_or_sector_drop": 0.0
+}
+
+# ----------------------------------------------------------------------
+#  Drawdown protection (Phase 1 live; Phase 3 adds portfolio exposure caps)
+# ----------------------------------------------------------------------
+DRAWDOWN_REDUCE_THRESHOLD  = 0.05           # 5 % DD ⇒ halve lot size
+DRAWDOWN_STOP_THRESHOLD    = 0.10           # 10 % DD ⇒ pause new trades
+
+# ----------------------------------------------------------------------
+#  Exit rules
+# ----------------------------------------------------------------------
+# TAKE_PROFIT_PCT            = 0.05           # +5 % TP
+STOP_LOSS_PCT              = 0.03          # –3 % SL
+MAX_HOLDING_DAYS          = 3             # max days to hold a position
+
+# ----------------------------------------------------------------------
+#  Fundamentals import
+# ----------------------------------------------------------------------
+REQUIRED_FY_ONLY           = False           # fundamentals: full-year rows only
+ENABLE_QUARTERLY_IMPORT    = True          # flip True when /statements Q* rows are stored
+
+# ----------------------------------------------------------------------
+#  External endpoints (J-Quants Light Plan)
+# ----------------------------------------------------------------------
+JQ_BASE_URL                = "https://api.jquants.com/v1"
+PRICE_ENDPOINT             = f"{JQ_BASE_URL}/prices/daily_quotes"
+FY_ENDPOINT                = f"{JQ_BASE_URL}/fins/statements"   # FY rows only
+LISTED_INFO_ENDPOINT       = f"{JQ_BASE_URL}/listed/info"
+TRADING_CALENDAR_ENDPOINT  = f"{JQ_BASE_URL}/markets/trading_calendar"
+
+# ----------------------------------------------------------------------
+#  Project metadata / UX
+# ----------------------------------------------------------------------
+PROJECT_NAME               = "PJ Fire"
+LINE_BOT_NAME              = "Signav シミュレータ"
+VERSION                    = "1.0.0"
+LINE_RICH_MENU_STYLE       = "compact"
+LINE_LANGUAGE              = "ja"
+UI_THEME                   = "light"
+
+# ----------------------------------------------------------------------
+#  Scheduling / automation
+# ----------------------------------------------------------------------
+DAILY_SIGNAL_TIME          = "08:45"        # JST, LINE push
+WEEKLY_REPORT_DAY          = "FRI"          # Friday summary
+
+# ----------------------------------------------------------------------
+#  GPT / reasoning settings
+# ----------------------------------------------------------------------
+GPT_MODEL                  = os.getenv("PJ_FIRE_GPT_MODEL", "gpt-4o")
+GPT_DELAY_SEC              = 1.2
+EXCLUSION_KEYWORDS = [
+    "粉飾", "不正", "会計不正", "虚偽",        # Fraud/accounting
+    "破産", "経営破綻", "倒産",              # Bankruptcy
+    "上場廃止", "監理銘柄", "整理銘柄", "取引停止", # Delisting, halt
+    "訴訟", "調査", "逮捕", "告発", "摘発", "処分", # Legal/compliance
+    "赤字拡大", "債務超過", "無配",           # Financial trouble
+    "社長辞任", "役員辞任", "経営危機",         # Management
+    "重大事故", "大規模リコール", "火災", "爆発", "情報漏洩" # Other events
+]
+REASONING_CATEGORY_LABELS  = [
+    "misinterpreted_news",
+    "slightly_bad_news",
+    "very_bad_news",
+    "no_news",
+    "macro_or_sector_drop"
+]
+
+# ----------------------------------------------------------------------
+#  Sector ETF mapping (for macro/sector drop detection)
+# ----------------------------------------------------------------------
+SECTOR_ETF_MAP = {
+    "食品": "1617",
+    "エネルギー資源": "1618",
+    "建設・資材": "1619",
+    "素材・化学": "1620",
+    "医薬品": "1621",
+    "自動車・輸送機": "1622",
+    "鉄鋼・非鉄": "1623",
+    "機械": "1624",
+    "電機・精密": "1625",
+    "情報通信・サービスその他": "1626",
+    "電気・ガス": "1627",
+    "運輸・物流": "1628",
+    "商社・卸売": "1629",
+    "小売": "1630",
+    "銀行": "1631",
+    "金融（除く銀行）": "1632",
+    "不動産": "1633",
+}
+MARKET_ETF = "1306"  # TOPIX ETF
+
+# ----------------------------------------------------------------------
+#  Backtest constants
+# ----------------------------------------------------------------------
+START_DATE = os.getenv("PJ_FIRE_BACKTEST_START", "2023-06-07")
+END_DATE   = os.getenv("PJ_FIRE_BACKTEST_END", "2025-06-07")
+START_CASH = int(os.getenv("PJ_FIRE_START_CASH", 1_000_000))
+
+# ----------------------------------------------------------------------
+#  Sanity checks to avoid silent mis-imports
+# ----------------------------------------------------------------------
+if __name__ != "config.config":
+    raise ImportError(
+        "Import constants via `from config.config import X`, "
+        "not by copying this file or re-naming it."
+    )
+
+# ----------------------------------------------------------------------
+#  Supported strategies and regimes (for multi-strategy support)
+# ----------------------------------------------------------------------
+STRATEGIES = [
+    "mean_reversion",
+    "momentum",  # Add more here in future
+]
+
+REGIMES = [
+    "bull",
+    "bear",
+    "volatile",
+    "stable",
+    "sector_up",
+    "sector_down",
+    "default",
+]
+
+backtest/backtest_engine.py
+"""
+PJ Fire — Unified Backtest Engine (with full daily stats, unified logging, PATCHED)
+Fixes indentation bug, unifies log schema, never skips logging a trade/skip/reject.
+"""
+
+import os
+import pandas as pd
+from datetime import datetime
+import matplotlib.pyplot as plt
+import json
+
+from config.config import BT_DB_FILE, START_CASH, START_DATE, END_DATE, DEFAULT_LOT_SIZE, STOP_LOSS_PCT
+from simulation.db_utils import get_conn, get_cash, get_prices
+from simulation.screening import screen_stocks 
+from simulation.reasoning import attach_reason_to_candidates
+from simulation.ranker import get_top_signals_for_day
+from simulation.utils import load_trading_days, get_next_trading_day
+from simulation.simulation_engine import (
+    simulate_trade_for_backtest,
+    init_simulation_db,
+    get_cash,
+    time_exit_logic
+)
+from simulation.logger import log_trade_full
+
+TRADING_DAYS = load_trading_days()  # Load ONCE at module startup
+
+def run_backtest_engine(
+    start_date=START_DATE, 
+    end_date=END_DATE, 
+    start_cash=START_CASH, 
+    output_dir="backtest/outputs"
+):
+    conn = get_conn(BT_DB_FILE)
+    init_simulation_db(BT_DB_FILE, start_cash)
+    all_dates = pd.date_range(start=start_date, end=end_date, freq='B')
+    trade_log = []
+    daily_stats = []
+    last_cash = start_cash
+    equity_curve = []
+
+    # Ensure output dir exists
+    os.makedirs(output_dir, exist_ok=True)
+
+    for date in all_dates:
+        date_str = date.strftime("%Y-%m-%d")
+        print(f"\n=== {date_str} ===")
+        activity = False  # Track if anything happens this day
+
+        candidates = screen_stocks(conn, date_str)
+        if not candidates:
+            print("No candidates for this day.")
+            daily_stats.append({"date": date_str, "n_trades": 0, "n_win": 0, "n_loss": 0, "n_other": 0, "day_pl": 0, "cash": last_cash})
+            equity_curve.append({"date": date_str, "equity": last_cash})
+            continue
+
+        candidates_with_reasons = attach_reason_to_candidates(conn, candidates)
+        if not candidates_with_reasons:
+            print("No candidates passed reasoning filter.")
+            daily_stats.append({"date": date_str, "n_trades": 0, "n_win": 0, "n_loss": 0, "n_other": 0, "day_pl": 0, "cash": last_cash})
+            equity_curve.append({"date": date_str, "equity": last_cash})
+            continue
+
+        top_signals = get_top_signals_for_day(candidates_with_reasons)
+        if not top_signals:
+            print("No signals above threshold.")
+            daily_stats.append({"date": date_str, "n_trades": 0, "n_win": 0, "n_loss": 0, "n_other": 0, "day_pl": 0, "cash": last_cash})
+            equity_curve.append({"date": date_str, "equity": last_cash})
+            continue
+
+        # Close positions held beyond the max holding period (time exits)
+        time_exit_logic(conn, date_str)
+        activity = True  # Assume exits could have occurred
+
+        # --- Sort signals by normalized_score descending (for fair cash allocation) ---
+        ranked_signals = sorted(top_signals, key=lambda x: x.get("normalized_score", 0), reverse=True)
+
+        n_win, n_loss, n_other = 0, 0, 0
+        day_pl = 0
+
+        for sig in ranked_signals:
+            # Get next day open (entry) and calculate lot cost from that entry
+            next_entry_date = get_next_trading_day(date_str, TRADING_DAYS, 1)
+            entry_prices = get_prices(conn, sig["ticker"], start_date=next_entry_date, end_date=next_entry_date)
+            if entry_prices.empty:
+                continue
+            entry_price = entry_prices["open"].iloc[0]
+            lot_cost = DEFAULT_LOT_SIZE * entry_price
+            cash = get_cash(conn)
+
+            # Always simulate "what-if" (virtual) trade, even if not enough cash
+            result, pl, entry_date, buy_price, exit_date, sell_price, quantity = simulate_trade_for_backtest(
+                conn, sig, date_str, TRADING_DAYS, return_result=True, execute_trade=False
+            )
+
+            # Compute TP and SL for log
+            target_tp = sig.get("ma5")
+            stop_loss = buy_price * (1 - STOP_LOSS_PCT) if buy_price is not None else None
+            trade_type = "SKIPPED" if result.startswith("SKIPPED") else "BOUGHT"
+
+            log_trade_full(
+                trade_id=len(trade_log) + 1,
+                signal_date=date_str,
+                buy_date=entry_date,
+                sell_date=exit_date,
+                ticker=sig.get("ticker"),
+                quantity=quantity,
+                buy_price=buy_price,
+                sell_price=sell_price,
+                trade_type=trade_type,
+                strategy=sig.get("strategy", "mean_reversion"),
+                result=result,
+                pl=pl,
+                score=sig.get("score"),
+                normalized_score=sig.get("normalized_score"),
+                technicals=json.dumps({k: sig.get(k) for k in ['rsi_14','ma5','ma25','volume','volume_spike']}),
+                fundamentals=json.dumps(sig.get("fy_features", {})),
+                gpt_summary=sig.get("gpt_summary", ""),
+                gpt_decision=sig.get("gpt_decision", ""),
+                news_url=sig.get("news_url", ""),
+                reason=sig.get("reason_category", ""),
+                take_profit=target_tp,
+                stop_loss=stop_loss,
+                # logged_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            )
+            trade_log.append({
+                "trade_id": len(trade_log) + 1,
+                "signal_date": date_str,
+                "buy_date": entry_date,
+                "sell_date": exit_date,
+                "ticker": sig.get("ticker"),
+                "quantity": quantity,
+                "buy_price": buy_price,
+                "sell_price": sell_price,
+                "trade_type": trade_type,
+                "strategy": sig.get("strategy", "mean_reversion"),
+                "result": result,
+                "pl": pl,
+                "score": sig.get("normalized_score"),
+                "technicals": json.dumps({k: sig.get(k) for k in ['rsi_14','ma5','ma25','volume','volume_spike']}),
+                "fundamentals": json.dumps(sig.get("fy_features", {})),
+                "gpt_summary": sig.get("gpt_summary", ""),
+                "gpt_decision": sig.get("gpt_decision", ""),
+                "news_url": sig.get("news_url", ""),
+                "reason": sig.get("reason_category", ""),
+                
+                "take_profit": target_tp,
+                "stop_loss": stop_loss,
+                "logged_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
+
+            if trade_type == "BOUGHT":
+                # Actually execute trade (updates cash, etc.)
+                actual_result, actual_pl, actual_entry_date, actual_entry_price, actual_exit_date, actual_exit_price, actual_qty = simulate_trade_for_backtest(
+                    conn, sig, date_str, TRADING_DAYS, return_result=True, execute_trade=True
+                )
+                # Stat tracking
+                if actual_result == "TP":
+                    n_win += 1
+                elif actual_result == "SL":
+                    n_loss += 1
+                else:
+                    n_other += 1
+                day_pl += actual_pl
+
+        last_cash = get_cash(conn)
+        daily_stats.append({
+            "date": date_str,
+            "n_trades": len(ranked_signals),
+            "n_win": n_win, "n_loss": n_loss, "n_other": n_other,
+            "day_pl": day_pl, "cash": last_cash
+        })
+        equity_curve.append({"date": date_str, "equity": last_cash})
+
+        if not activity:
+            print("No trades or exits executed today.")
+
+    conn.close()
+    # === Output results to CSV for analysis ===
+    df_equity = pd.DataFrame(equity_curve)
+    df_trades = pd.DataFrame(trade_log)
+    df_stats = pd.DataFrame(daily_stats)
+
+    run_tag = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+    df_equity.to_csv(os.path.join(output_dir, f"equity_curve_{run_tag}.csv"), index=False)
+    df_trades.to_csv(os.path.join(output_dir, f"trades_{run_tag}.csv"), index=False)
+    df_stats.to_csv(os.path.join(output_dir, f"daily_stats_{run_tag}.csv"), index=False)
+    print(f"✅ Backtest outputs saved to {output_dir}/ as *_ {run_tag}.csv")
+
+    n_trades = sum(d["n_trades"] for d in daily_stats)
+    n_win = sum(d["n_win"] for d in daily_stats)
+    win_rate = n_win / n_trades if n_trades else 0
+    final_cash = daily_stats[-1]["cash"] if daily_stats else start_cash
+    final_pl = final_cash - start_cash
+
+    print(f"\n==== BACKTEST SUMMARY ({run_tag}) ====")
+    print(f"Total trades: {n_trades}")
+    print(f"Win rate (TP): {win_rate:.2%}")
+    print(f"Final P/L: {final_pl:.0f} yen")
+    print(f"Ending cash: {final_cash:,.0f} yen")
+    print("\nFirst 5 daily stats:")
+    print(df_stats.head())
+    print("\nFirst 5 trades:")
+    print(df_trades.head())
+
+    # === Mark to Market All Open Positions ===
+    # 1. Find all open positions (buys not fully closed by sells)
+    df_trades_buys = df_trades[df_trades["trade_type"] == "BOUGHT"]
+    df_trades_sells = df_trades[df_trades["trade_type"] == "SELL"]
+
+    open_positions = (
+        df_trades_buys.groupby("ticker").agg({"quantity":"sum", "buy_date":"last", "buy_price":"last"})
+        .join(
+            df_trades_sells.groupby("ticker").agg({"quantity":"sum"}).rename(columns={"quantity": "quantity_sold"}),
+            how="left"
+        )
+        .fillna(0)
+        .assign(open_qty=lambda x: x["quantity"] - x["quantity_sold"])
+        .query("open_qty > 0")
+    )
+
+    mkt_value = 0
+    last_date = df_equity["date"].iloc[-1]
+
+    if not open_positions.empty:
+        conn2 = get_conn(BT_DB_FILE)
+        for ticker, row in open_positions.iterrows():
+            price_df = get_prices(conn2, ticker, start_date=last_date, end_date=last_date)
+            if not price_df.empty and "close" in price_df.columns:
+                last_close = price_df["close"].iloc[0]
+                qty = row["open_qty"]
+                mkt_value += qty * last_close
+        conn2.close()
+        true_final_equity = final_cash + mkt_value
+        print(f"\n=== TRUE FINAL EQUITY (marked to market): {true_final_equity:,.0f} yen ===")
+        print(f"  Cash: {final_cash:,.0f} yen")
+        print(f"  Market value of open positions: {mkt_value:,.0f} yen")
+        print(f"\n[INFO] {len(open_positions)} open position(s) at end of backtest included at market value.")
+    else:
+        true_final_equity = final_cash
+        print("\n=== TRUE FINAL EQUITY: no open positions, all cash ===")
+
+    # Optionally, save true final equity to a summary file
+    with open(os.path.join(output_dir, f"summary_{run_tag}.txt"), "w", encoding="utf-8") as f:
+        f.write(f"==== BACKTEST SUMMARY ({run_tag}) ====\n")
+        f.write(f"Total trades: {n_trades}\n")
+        f.write(f"Win rate (TP): {win_rate:.2%}\n")
+        f.write(f"Final P/L: {final_pl:.0f} yen\n")
+        f.write(f"Ending cash: {final_cash:,.0f} yen\n")
+        f.write(f"TRUE FINAL EQUITY: {true_final_equity:,.0f} yen\n")
+        f.write(f"  (includes market value of all open positions)\n")
+
+    return df_stats, df_trades, df_equity
+
+if __name__ == "__main__":
+    run_backtest_engine()
+
+backtest/backtest_engine_irbank.py
+this module will no longer be used since using irbank headlines wasnt a good substitute for google cse news headlines.
+however, there may have been changes made only in here that should be reflected in backtest/backtest_engine.py
+
+"""
+PJ Fire — Backtest Engine (IR Bank-Driven Reasoning Version)
+Runs full backtest using local IR Bank news DB for GPT-based categorization.
+"""
+
+import os
+import pandas as pd
+import sqlite3
+from datetime import datetime
+import matplotlib.pyplot as plt
+import json
+
+from config.config import BT_DB_FILE, START_CASH, START_DATE, END_DATE, DEFAULT_LOT_SIZE, STOP_LOSS_PCT
+from simulation.db_utils import get_conn, get_cash, get_prices
+from simulation.screening import screen_stocks 
+from simulation.ranker import get_top_signals_for_day
+from simulation.utils import load_trading_days, get_next_trading_day
+from simulation.simulation_engine import (
+    simulate_trade_for_backtest,
+    init_simulation_db,
+    get_cash,
+    time_exit_logic
+)
+from simulation.logger import log_trade_full
+
+from simulation.news_reason_gpt import categorize_reason_with_gpt
+
+TRADING_DAYS = load_trading_days()  # Load ONCE at module startup
+
+def get_irbank_news(conn, ticker, date, window=1):
+    """
+    Returns a list of {'date', 'headline', 'url'} from irbank_news for ticker within ±window days of date.
+    """
+    target_date = pd.to_datetime(date)
+    results = []
+    cur = conn.cursor()
+    ticker_str = str(ticker).rstrip("0")
+    cur.execute(
+        f"SELECT date, headline, url FROM irbank_news WHERE ticker = ?",
+        (ticker_str,)
+    )
+    rows = cur.fetchall()
+    for d, h, u in rows:
+        try:
+            d_obj = pd.to_datetime(d)
+        except Exception:
+            continue
+        if abs((d_obj - target_date).days) <= window:
+            results.append({"date": d, "headline": h, "url": u})
+    return results
+
+def run_backtest_engine(
+    start_date=START_DATE, 
+    end_date=END_DATE, 
+    start_cash=START_CASH, 
+    output_dir="backtest/outputs"
+):
+    conn = get_conn(BT_DB_FILE)
+    init_simulation_db(BT_DB_FILE, start_cash)
+    all_dates = pd.date_range(start=start_date, end=end_date, freq='B')
+    trade_log = []
+    daily_stats = []
+    last_cash = start_cash
+    equity_curve = []
+
+    # Ensure output dir exists
+    os.makedirs(output_dir, exist_ok=True)
+
+    for date in all_dates:
+        date_str = date.strftime("%Y-%m-%d")
+        print(f"\n=== {date_str} ===")
+        activity = False  # Track if anything happens this day
+
+        candidates = screen_stocks(conn, date_str)
+        if not candidates:
+            print("No candidates for this day.")
+            daily_stats.append({"date": date_str, "n_trades": 0, "n_win": 0, "n_loss": 0, "n_other": 0, "day_pl": 0, "cash": last_cash})
+            equity_curve.append({"date": date_str, "equity": last_cash})
+            continue
+
+        # === Attach IR Bank news and GPT reason to each candidate ===
+        for c in candidates:
+            next_entry_date = get_next_trading_day(date_str, TRADING_DAYS, 1)
+            c["irbank_news"] = get_irbank_news(conn, c["ticker"], next_entry_date, window=1)
+            # Compose the text for GPT
+            gpt_input = "\n".join(f"{item['date']} {item['headline']}" for item in c["irbank_news"]) or "No relevant IR news."
+            # Use price_drop_pct if you have it; otherwise, use 0
+            price_drop_pct = c.get("price_drop_pct", 0)
+            category = categorize_reason_with_gpt(
+                ticker=c["ticker"],
+                date=next_entry_date,
+                price_drop_pct=price_drop_pct,
+                headlines=gpt_input
+            )
+            c["reason_category"] = category
+            c["gpt_summary"] = gpt_input if gpt_input != "No relevant IR news." else ""
+            c["gpt_decision"] = ""
+
+        # === Candidate Filtering/Ranking as before ===
+        candidates_with_reasons = candidates  # All now have IR Bank + GPT-based reasons
+        if not candidates_with_reasons:
+            print("No candidates passed reasoning filter.")
+            daily_stats.append({"date": date_str, "n_trades": 0, "n_win": 0, "n_loss": 0, "n_other": 0, "day_pl": 0, "cash": last_cash})
+            equity_curve.append({"date": date_str, "equity": last_cash})
+            continue
+
+        top_signals = get_top_signals_for_day(candidates_with_reasons)
+        if not top_signals:
+            print("No signals above threshold.")
+            daily_stats.append({"date": date_str, "n_trades": 0, "n_win": 0, "n_loss": 0, "n_other": 0, "day_pl": 0, "cash": last_cash})
+            equity_curve.append({"date": date_str, "equity": last_cash})
+            continue
+
+        # Close positions held beyond the max holding period (time exits)
+        time_exit_logic(conn, date_str)
+        activity = True  # Assume exits could have occurred
+
+        # --- Sort signals by normalized_score descending (for fair cash allocation) ---
+        ranked_signals = sorted(top_signals, key=lambda x: x.get("normalized_score", 0), reverse=True)
+
+        n_win, n_loss, n_other = 0, 0, 0
+        day_pl = 0
+        
+        for sig in ranked_signals:
+            next_entry_date = get_next_trading_day(date_str, TRADING_DAYS, 1)
+            entry_prices = get_prices(conn, sig["ticker"], start_date=next_entry_date, end_date=next_entry_date)
+            if entry_prices.empty:
+                continue
+            entry_price = entry_prices["open"].iloc[0]
+            lot_cost = DEFAULT_LOT_SIZE * entry_price
+            cash = get_cash(conn)
+
+            # 1. Always simulate the what-if trade (even for SKIPPED)
+            result, pl, entry_date, buy_price, exit_date, sell_price, quantity = simulate_trade_for_backtest(
+                conn, sig, date_str, TRADING_DAYS, return_result=True, execute_trade=False
+            )
+            target_tp = sig.get("ma5")
+            stop_loss = buy_price * (1 - STOP_LOSS_PCT) if buy_price is not None else None
+            trade_type = "SKIPPED" if result.startswith("SKIPPED") else "BOUGHT"
+
+            # 2. Log everything — all columns for all trades, including “what-if” P/L for skipped trades!
+            log_trade_full(
+                trade_id=len(trade_log) + 1,
+                signal_date=date_str,
+                buy_date=entry_date,
+                sell_date=exit_date,
+                ticker=sig.get("ticker"),
+                quantity=quantity,
+                buy_price=buy_price,
+                sell_price=sell_price,
+                trade_type=trade_type,
+                strategy=sig.get("strategy", "mean_reversion"),
+                result=result,
+                pl=pl,
+                score=sig.get("score"),
+                normalized_score=sig.get("normalized_score"),
+                technicals=json.dumps({k: sig.get(k) for k in ['rsi_14','ma5','ma25','volume','volume_spike']}),
+                fundamentals=json.dumps(sig.get("fy_features", {})),
+                gpt_summary=sig.get("gpt_summary", ""),
+                gpt_decision=sig.get("gpt_decision", ""),
+                news_url="",
+                reason=sig.get("reason_category", ""),
+                news_headlines=json.dumps(sig.get("irbank_news", []), ensure_ascii=False),
+                take_profit=target_tp,
+                stop_loss=stop_loss,
+            )
+            trade_log.append({
+                "trade_id": len(trade_log) + 1,
+                "signal_date": date_str,
+                "buy_date": entry_date,
+                "sell_date": exit_date,
+                "ticker": sig.get("ticker"),
+                "quantity": quantity,
+                "buy_price": buy_price,
+                "sell_price": sell_price,
+                "trade_type": trade_type,
+                "strategy": sig.get("strategy", "mean_reversion"),
+                "result": result,
+                "pl": pl,
+                "score": sig.get("score"),
+                "normalized_score": sig.get("normalized_score"),
+                "technicals": json.dumps({k: sig.get(k) for k in ['rsi_14','ma5','ma25','volume','volume_spike']}),
+                "fundamentals": json.dumps(sig.get("fy_features", {})),
+                "gpt_summary": sig.get("gpt_summary", ""),
+                "gpt_decision": sig.get("gpt_decision", ""),
+                "news_url": "",
+                "reason": sig.get("reason_category", ""),
+                "news_headlines": json.dumps(sig.get("irbank_news", []), ensure_ascii=False),
+                "take_profit": target_tp,
+                "stop_loss": stop_loss,
+                "logged_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
+
+            # 3. Only execute actual trades for non-skipped signals
+            if trade_type == "BOUGHT":
+                actual_result, actual_pl, actual_entry_date, actual_entry_price, actual_exit_date, actual_exit_price, actual_qty = simulate_trade_for_backtest(
+                    conn, sig, date_str, TRADING_DAYS, return_result=True, execute_trade=True
+                )
+                if actual_result == "TP":
+                    n_win += 1
+                elif actual_result == "SL":
+                    n_loss += 1
+                else:
+                    n_other += 1
+                day_pl += actual_pl
+
+        last_cash = get_cash(conn)
+        daily_stats.append({
+            "date": date_str,
+            "n_trades": len(ranked_signals),
+            "n_win": n_win, "n_loss": n_loss, "n_other": n_other,
+            "day_pl": day_pl, "cash": last_cash
+        })
+        equity_curve.append({"date": date_str, "equity": last_cash})
+
+        if not activity:
+            print("No trades or exits executed today.")
+
+    conn.close()
+    # Output results
+    df_equity = pd.DataFrame(equity_curve)
+    df_trades = pd.DataFrame(trade_log)
+    df_stats = pd.DataFrame(daily_stats)
+
+    run_tag = datetime.now().strftime('%Y%m%d_%H%M%S')
+    output_dir = os.path.abspath(output_dir)
+    df_equity.to_csv(os.path.join(output_dir, f"equity_curve_{run_tag}.csv"), index=False)
+    df_trades.to_csv(os.path.join(output_dir, f"trades_{run_tag}.csv"), index=False)
+    df_stats.to_csv(os.path.join(output_dir, f"daily_stats_{run_tag}.csv"), index=False)
+    print(f"✅ Backtest outputs saved to {output_dir}/ as *_{run_tag}.csv")
+
+    n_trades = sum(d["n_trades"] for d in daily_stats)
+    n_win = sum(d["n_win"] for d in daily_stats)
+    win_rate = n_win / n_trades if n_trades else 0
+    final_cash = daily_stats[-1]["cash"] if daily_stats else start_cash
+    final_pl = final_cash - start_cash
+
+    print(f"\n==== BACKTEST SUMMARY ({run_tag}) ====")
+    print(f"Total trades: {n_trades}")
+    print(f"Win rate (TP): {win_rate:.2%}")
+    print(f"Final P/L: {final_pl:.0f} yen")
+    print(f"Ending cash: {final_cash:,.0f} yen")
+    print("\nFirst 5 daily stats:")
+    print(df_stats.head())
+    print("\nFirst 5 trades:")
+    print(df_trades.head())
+
+    # === Mark to Market All Open Positions ===
+    df_trades_buys = df_trades[df_trades["trade_type"] == "BOUGHT"]
+    df_trades_sells = df_trades[df_trades["trade_type"] == "SELL"]
+
+    open_positions = (
+        df_trades_buys.groupby("ticker").agg({"quantity":"sum", "buy_date":"last", "buy_price":"last"})
+        .join(
+            df_trades_sells.groupby("ticker").agg({"quantity":"sum"}).rename(columns={"quantity": "quantity_sold"}),
+            how="left"
+        )
+        .fillna(0)
+        .assign(open_qty=lambda x: x["quantity"] - x["quantity_sold"])
+        .query("open_qty > 0")
+    )
+
+    mkt_value = 0
+    last_date = df_equity["date"].iloc[-1]
+
+    if not open_positions.empty:
+        conn2 = get_conn(BT_DB_FILE)
+        for ticker, row in open_positions.iterrows():
+            price_df = get_prices(conn2, ticker, start_date=last_date, end_date=last_date)
+            if not price_df.empty and "close" in price_df.columns:
+                last_close = price_df["close"].iloc[0]
+                qty = row["open_qty"]
+                mkt_value += qty * last_close
+        conn2.close()
+        true_final_equity = final_cash + mkt_value
+        print(f"\n=== TRUE FINAL EQUITY (marked to market): {true_final_equity:,.0f} yen ===")
+        print(f"  Cash: {final_cash:,.0f} yen")
+        print(f"  Market value of open positions: {mkt_value:,.0f} yen")
+        print(f"\n[INFO] {len(open_positions)} open position(s) at end of backtest included at market value.")
+    else:
+        true_final_equity = final_cash
+        print("\n=== TRUE FINAL EQUITY: no open positions, all cash ===")
+
+    with open(os.path.join(output_dir, f"summary_{run_tag}.txt"), "w", encoding="utf-8") as f:
+        f.write(f"==== BACKTEST SUMMARY ({run_tag}) ====\n")
+        f.write(f"Total trades: {n_trades}\n")
+        f.write(f"Win rate (TP): {win_rate:.2%}\n")
+        f.write(f"Final P/L: {final_pl:.0f} yen\n")
+        f.write(f"Ending cash: {final_cash:,.0f} yen\n")
+        f.write(f"TRUE FINAL EQUITY: {true_final_equity:,.0f} yen\n")
+        f.write(f"  (includes market value of all open positions)\n")
+
+    return df_stats, df_trades, df_equity
+
+if __name__ == "__main__":
+    run_backtest_engine()
+
+
+simulation/db_utils.py
+"""
+PJ Fire — Database Utilities (PATCHED, CASH-LOGIC AUDITED)
+Handles DB connection and all table setup, using config-defined paths and schema.
+No duplicate or conflicting cash/portfolio logic.
+"""
+
+import sqlite3
+import pandas as pd
+from datetime import datetime
+from config.config import (
+    SIM_DB_FILE,
+    BT_DB_FILE,
+    START_CASH,    # PATCH: Use only START_CASH from config, never DEFAULT_CASH
+)
+
+def get_conn(db_path=None):
+    """Open a SQLite connection for the specified DB path."""
+    if db_path is None:
+        db_path = SIM_DB_FILE
+    return sqlite3.connect(db_path)
+
+def init_pjfire_tables(conn):
+    """Create all unified schema tables if they do not exist."""
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS prices (
+            ticker TEXT,
+            date TEXT,
+            open REAL,
+            high REAL,
+            low REAL,
+            close REAL,
+            volume INTEGER,
+            PRIMARY KEY (ticker, date)
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS fundamentals (
+            ticker TEXT,
+            period_type TEXT,
+            period_end DATE,
+            revenue REAL,
+            eps REAL,
+            profit REAL,
+            PRIMARY KEY (ticker, period_type, period_end)
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS portfolio (
+            ticker TEXT,
+            entry_date TEXT,
+            quantity INTEGER,
+            entry_price REAL,
+            status TEXT,
+            strategy TEXT,
+            signal_score REAL,
+            regime TEXT,
+            PRIMARY KEY (ticker, entry_date, strategy, regime)
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS trades (
+            trade_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            datetime TEXT,
+            ticker TEXT,
+            quantity INTEGER,
+            price REAL,
+            trade_type TEXT,
+            strategy TEXT,
+            regime TEXT,
+            reason TEXT
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS cash (
+            as_of TEXT PRIMARY KEY,
+            balance REAL
+        )
+    """)
+    conn.commit()
+
+def insert_prices(conn, df):
+    """Insert or update daily prices, avoiding duplicates and ensuring freshest data."""
+    df = df.drop_duplicates(subset=["date", "ticker"])
+    records = df.to_dict(orient="records")
+    cur = conn.cursor()
+    cur.executemany("""
+        INSERT OR REPLACE INTO prices
+        (date, ticker, open, high, low, close, volume)
+        VALUES (:date, :ticker, :open, :high, :low, :close, :volume)
+    """, records)
+    conn.commit()
+
+def insert_fundamentals(conn, df):
+    """Insert a DataFrame of fundamentals (FY and/or quarterly) into the table."""
+    for _, row in df.iterrows():
+        try:
+            conn.execute("""
+                INSERT OR REPLACE INTO fundamentals 
+                    (ticker, period_type, period_end, revenue, eps, profit)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (row['ticker'], row['period_type'], row['period_end'], row['revenue'], row['eps'], row['profit']))
+        except Exception as e:
+            print(f"[WARN] Insert failed for {row['ticker']} {row['period_type']} {row['period_end']}: {e}")
+    conn.commit()
+
+def get_prices(conn, ticker, start_date=None, end_date=None):
+    """Fetch daily prices for a ticker and optional date range."""
+    query = "SELECT * FROM prices WHERE ticker = ?"
+    params = [ticker]
+    if start_date:
+        query += " AND date >= ?"
+        params.append(start_date)
+    if end_date:
+        query += " AND date <= ?"
+        params.append(end_date)
+    df = pd.read_sql(query, conn, params=params)
+    return df
+
+def get_fundamentals(conn, ticker, period_type="FY", n=5):
+    """Fetches up to n most recent fundamentals for a given ticker and period type."""
+    query = """
+    SELECT * FROM fundamentals
+    WHERE ticker = ?
+    AND period_type = ?
+    ORDER BY period_end DESC
+    LIMIT ?
+    """
+    df = pd.read_sql(query, conn, params=[ticker, period_type, n])
+    return df
+
+def get_quarterly_fundamentals(conn, ticker, n=4):
+    """Fetches up to n most recent quarterly (1Q–4Q) reports for a given ticker."""
+    query = """
+    SELECT * FROM fundamentals
+    WHERE ticker = ?
+    AND period_type IN ('1Q', '2Q', '3Q', '4Q')
+    ORDER BY period_end DESC
+    LIMIT ?
+    """
+    df = pd.read_sql(query, conn, params=[ticker, n])
+    return df
+
+def get_cash(conn):
+    """Fetch the latest cash balance from the cash table. If empty, initialize with START_CASH."""
+    query = "SELECT balance FROM cash ORDER BY as_of DESC LIMIT 1"
+    cur = conn.cursor()
+    cur.execute(query)
+    row = cur.fetchone()
+    if row:
+        return float(row[0])
+    else:
+        # PATCH: Initialize with START_CASH and today's date
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cur.execute("INSERT INTO cash (as_of, balance) VALUES (?, ?)", (now, float(START_CASH)))
+        conn.commit()
+        return float(START_CASH)
+
+def update_cash(conn, delta):
+    """
+    Update the cash balance by a delta (positive or negative).
+    Appends a new record with the current timestamp as 'as_of'.
+    Ensures unique as_of values (microseconds appended).
+    """
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")  # PATCH: microseconds for unique PK
+    cur = conn.cursor()
+    cur.execute("SELECT balance FROM cash ORDER BY as_of DESC LIMIT 1")
+    row = cur.fetchone()
+    prev = float(row[0]) if row else float(START_CASH)
+    new_balance = prev + delta
+    cur.execute("INSERT INTO cash (as_of, balance) VALUES (?, ?)", (now, new_balance))
+    conn.commit()
+    return new_balance
+
+def update_portfolio(conn, ticker, entry_date, quantity, entry_price, status, strategy, signal_score, regime):
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT OR REPLACE INTO portfolio
+            (ticker, entry_date, quantity, entry_price, status, strategy, signal_score, regime)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (ticker, entry_date, quantity, entry_price, status, strategy, signal_score, regime)
+    )
+    conn.commit()
+
+
+simulation/fetch_news.py
+import os
+import sqlite3
+import pandas as pd
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
+from googleapiclient.discovery import build
+import time
+import re
+
+from config.config import (
+    SIM_DB_FILE,
+    VARIANT_CSV,
+    GOOGLE_API_KEY,
+    GOOGLE_CSE_ID,
+    GPT_DELAY_SEC,
+)
+
+MAX_RESULTS = 10
+
+# --- News Headline Filtering / Scoring ---
+ALLOWED_DOMAINS = [
+    "nikkei.com", "kabutan.jp", "bloomberg.co.jp", "reuters.com",
+    "irbank.net", "minkabu.jp", "moneyworld.jp", "fisco.jp"
+]
+JUNK_DOMAINS = [
+    "facebook.com", "twitter.com", "x.com", "instagram.com",
+    "wikipedia.org", "linkedin.com", "youtube.com", "ameblo.jp",
+    "note.com", "shop", "rakuten.co.jp", "amazon.co.jp"
+]
+JUNK_URL_PATTERNS = [
+    "/wiki/", "/mypage/", "/profile/", "/about/", "/support/", "/blog/", "/career/", "/job/", "/shop/", "/event/", "/guide/", "/faq", "/posts/", "/users/", "/account/", "/company/", "/news/all/", "/ir/", "/corp/"
+]
+
+SIGNAL_KEYWORDS = [
+    "下方修正", "上方修正", "買収", "合併", "子会社化", "不正", "訴訟", "監査", "粉飾",
+    "大幅減益", "黒字転換", "赤字転落", "新製品", "新サービス", "サービス開始",
+    "製品発表", "新規事業", "事業撤退", "生産停止", "販売停止", "リコール", "不祥事",
+    "人事異動", "退任", "新任", "大型契約", "受注", "資本提携", "株式交換", "TOB",
+    "公募増資", "第三者割当増資", "ストックオプション"
+]
+BONUS_KEYWORDS = [
+    "決算発表", "株主総会", "新規上場", "M&A", "業務提携", "IR発表", "開発成功",
+    "認可取得", "配当金", "新商品", "リニューアル", "役員報酬", "資本業務提携", "開示",
+    "役員変更", "市場変更", "公募増資", "資本提携", "IR", "株式分割"
+]
+JUNK_KEYWORDS = [
+    "ADRランキング", "ADR", "出来高ランキング", "売買高ランキング", "売買代金ランキング",
+    "PTS", "注目銘柄", "個別銘柄", "上昇銘柄", "動き", "出来高上位", "PBR", "PER", "時価総額",
+    "株価チャート", "理論株価", "目標株価", "掲示板", "株予報", "信用残", "時系列", "株価データ",
+    "レーティング", "トレンド", "株価", "株式", "チャート", "株価情報", "株式情報",
+    "日々株価", "週間株価", "年間株価", "四本値推移", "取引情報", "株式掲示板", "SBI証券",
+    "マネックス証券", "楽天証券", "証券会社", "株式ニュース", "銘柄情報", "会社情報",
+    "アセットアライブ", "株価・配当", "ピックアップ", "株価ヒストリー", "過去10年間",
+    "過去1か月", "株価指数", "指標", "モーニングスター", "ストップ高", "ストップ安",
+    "高値更新", "安値更新", "中途採用", "求人", "企業概要", "株価時系列", "転職",
+    "企業情報", "就職", "就活", "公式サイト",
+    "Stock Price & Latest News"
+]
+LOW_QUALITY_PATTERNS = [
+    "ランキング", "予想", "株主", "配当", "IRバンク", "MINKABU", "株探", "PR TIMES",
+    "チャート", "株価", "日々株価", "週間株価", "年間株価", "株価予想", "株価情報",
+    "株式情報", "株予報", "四本値推移", "配当情報", "会社概要", "証券コード", "株式指標", "優待",
+    "時系列", "株式分割", "過去10年間", "過去1か月", "個人投資家", "ピックアップ", "主要株主",
+    "株価データ", "株主総会", "銘柄情報", "ニュース一覧", "情報", "IR情報", "四季報"
+]
+
+def strip_trailing_zero(code):
+    code = str(code)
+    if len(code) == 5 and code.endswith("0"):
+        return code[:-1]
+    return code
+
+def halfwidth_to_fullwidth(s):
+    return ''.join(chr(ord(c) + 0xFEE0) if c.isdigit() else c for c in str(s))
+
+# --- LOAD VARIANTS TABLE ---
+variant_df = pd.read_csv(VARIANT_CSV, dtype=str)
+variant_df["ticker"] = variant_df["ticker"].apply(strip_trailing_zero)
+TICKER_TO_VARIANTS = {
+    row["ticker"]: [v.strip() for v in str(row["variants"]).split(" / ")
+                    if v.strip() and not v.strip().isdigit()]
+    for _, row in variant_df.iterrows()
+}
+
+def is_allowed_domain(url):
+    return any(dom in url for dom in ALLOWED_DOMAINS)
+
+def is_junk_domain(url):
+    return any(dom in url for dom in JUNK_DOMAINS)
+
+def is_junk_url(url):
+    return any(pat in url for pat in JUNK_URL_PATTERNS)
+
+def is_junk_headline(text):
+    generic = ["公式サイト", "マイページ", "会社概要", "プロフィール", "お問い合わせ", "サポート", "コーポレート", "求人", "採用情報"]
+    if any(word in text for word in generic):
+        return True
+    if "掲示板" in text or "ADRランキング" in text:
+        return True
+    if re.fullmatch(r"[A-Za-z0-9\-_/ ]+", text):
+        return True
+    if re.fullmatch(r"\d{4,6}", text):
+        return True
+    if len(text) < 10 and not any(w in text for w in SIGNAL_KEYWORDS + BONUS_KEYWORDS):
+        return True
+    return False
+
+def mentions_wrong_company(text, search_terms):
+    return not any(v in text for v in search_terms)
+
+def score_headline(text, url, search_terms):
+    score = 0
+    if any(term in text for term in SIGNAL_KEYWORDS):
+        score += 5
+    if any(term in text for term in BONUS_KEYWORDS):
+        score += 3
+    if any(domain in url for domain in ALLOWED_DOMAINS):
+        score += 2
+    if any(v in text for v in search_terms):
+        score += 1
+    if any(term in text for term in JUNK_KEYWORDS):
+        score -= 3
+    if is_junk_domain(url) or is_junk_url(url) or is_junk_headline(text):
+        score -= 5
+    if any(term in text for term in LOW_QUALITY_PATTERNS):
+        score -= 1
+    return score
+
+def get_search_terms(ticker, variants):
+    ticker = strip_trailing_zero(ticker)
+    ticker_fw = halfwidth_to_fullwidth(ticker)
+    terms = [ticker, ticker_fw] + [v for v in variants if v not in {ticker, ticker_fw}]
+    return list(dict.fromkeys([t for t in terms if t and len(t) > 1]))
+
+def fetch_news_for_ticker(ticker, signal_date):
+    ticker = strip_trailing_zero(ticker)
+    variants = TICKER_TO_VARIANTS.get(str(ticker), [])
+    search_terms = get_search_terms(ticker, variants)
+    if not search_terms:
+        print(f"[WARN] No search terms for ticker {ticker}.")
+        return "No variants or ticker for news search."
+
+    conn = sqlite3.connect(SIM_DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS news_cache (
+            ticker TEXT,
+            signal_date TEXT,
+            headlines TEXT,
+            PRIMARY KEY (ticker, signal_date)
+        )
+    """)
+    cursor.execute("""
+        SELECT headlines FROM news_cache
+        WHERE ticker = ? AND signal_date = ?
+    """, (ticker, signal_date))
+    row = cursor.fetchone()
+    if row:
+        conn.close()
+        return row[0]
+
+    try:
+        service = build("customsearch", "v1", developerKey=GOOGLE_API_KEY)
+    except Exception as e:
+        print(f"[ERROR] Google CSE API error: {e}")
+        conn.close()
+        return "No headlines due to Google API error."
+
+    base_date = datetime.strptime(signal_date, "%Y-%m-%d")
+    headlines = []
+
+    for offset in range(-3, 2):  # -3 to +1 inclusive
+        q_date = (base_date + timedelta(days=offset)).strftime("%Y-%m-%d")
+        for term in search_terms:
+            for suffix in ["", " 株", " ニュース"]:
+                query = f'{term}{suffix}'
+                try:
+                    result = service.cse().list(
+                        q=query,
+                        cx=GOOGLE_CSE_ID,
+                        lr="lang_ja",
+                        num=MAX_RESULTS,
+                        sort="date"
+                    ).execute()
+                except Exception as e:
+                    print(f"\u26a0\ufe0f Google CSE failed for {ticker} ({term}) on {q_date}: {e}")
+                    continue
+
+                items = result.get("items", [])
+                for item in items:
+                    title = item.get("title", "")
+                    link = item.get("link", "")
+                    if is_junk_domain(link) or is_junk_url(link) or is_junk_headline(title):
+                        continue
+                    if mentions_wrong_company(title, search_terms):
+                        continue
+                    score = score_headline(title, link, search_terms)
+                    if score > 0 or is_allowed_domain(link):
+                        headlines.append((score, f"- {title} ({link})"))
+                time.sleep(GPT_DELAY_SEC)  # Rate limit by config
+
+    # Deduplicate by headline text
+    seen_titles = set()
+    cleaned = []
+    for s, line in sorted(headlines, reverse=True):
+        title = line.split(" (")[0].replace("- ", "")
+        if title not in seen_titles:
+            cleaned.append((s, line))
+            seen_titles.add(title)
+
+    top_n = [line for _, line in cleaned[:3]]
+    headlines_str = "\n".join(top_n) if top_n else "No high-quality headlines found."
+
+    cursor.execute("""
+        INSERT OR REPLACE INTO news_cache (ticker, signal_date, headlines)
+        VALUES (?, ?, ?)
+    """, (ticker, signal_date, headlines_str))
+    conn.commit()
+    conn.close()
+
+    return headlines_str
+
+# --- Test loop ---
+if __name__ == "__main__":
+    test_cases = [
+        ("7203", "2024-05-10"),
+        ("9984", "2024-04-30"),
+        ("3436", "2024-05-09"),
+        ("8058", "2024-03-28"),
+        ("8306", "2024-01-18"),
+        ("9501", "2024-02-13"),
+        ("3769", "2024-04-18"),
+        ("2432", "2024-01-18"),
+        ("7065", "2024-03-08"),
+        ("6758", "2024-05-02"),
+        ("2702", "2024-05-13"),
+        ("4523", "2024-03-07"),
+        ("9022", "2024-04-02"),
+        ("6981", "2024-02-19"),
+    ]
+    for t, d in test_cases:
+        print(f"\n=== {t} {d} ===")
+        headlines = fetch_news_for_ticker(t, d)
+        print(headlines)
+
+simulation/fundamental_features.py
+"""
+PJ Fire — Fundamental Feature Extraction
+All calculations are logic-only; all constants come from config.
+"""
+
+import pandas as pd
+import numpy as np
+
+def extract_fy_features(df):
+    """
+    Input: DataFrame of annual FY rows (latest to oldest).
+    Returns: Dict of features.
+    Expects columns: ['ticker', 'period_type', 'period_end', 'revenue', 'eps', 'profit']
+    """
+    df = df[df["period_type"] == "FY"].sort_values("period_end", ascending=False).reset_index(drop=True)
+    features = {}
+    if len(df) < 2:
+        return {"error": "Not enough FY data"}
+    # Latest and previous year (copy for safe assignment)
+    latest = df.iloc[0].copy()
+    prev = df.iloc[1].copy()
+    for col in ["revenue", "profit", "eps"]:
+        latest[col] = pd.to_numeric(latest[col], errors="coerce")
+        prev[col] = pd.to_numeric(prev[col], errors="coerce")
+    # Compute YoY
+    features["eps"] = latest["eps"]
+    features["eps_yoy"] = (latest["eps"] - prev["eps"]) / (abs(prev["eps"]) + 1e-8)
+    features["profit"] = latest["profit"]
+    features["profit_yoy"] = (latest["profit"] - prev["profit"]) / (abs(prev["profit"]) + 1e-8)
+    features["revenue"] = latest["revenue"]
+    features["revenue_yoy"] = (latest["revenue"] - prev["revenue"]) / (abs(prev["revenue"]) + 1e-8)
+    # Multi-year trends
+    eps_arr = pd.to_numeric(df["eps"].head(5), errors="coerce").values
+    profit_arr = pd.to_numeric(df["profit"].head(5), errors="coerce").values
+    features["eps_negative_years"] = int(np.sum(eps_arr < 0))
+    features["profit_down_years"] = int(np.sum(np.diff(profit_arr) < 0))
+    features["piotroski_f_score"] = piotroski_f_score(df)
+    return features
+
+
+def extract_ttm_features(df_q):
+    """
+    Input: DataFrame of quarterly rows (latest to oldest).
+    Returns: Dict of TTM features.
+    Expects columns: ['ticker', 'period_type', 'period_end', 'revenue', 'eps', 'profit']
+    """
+    df_q = df_q[df_q["period_type"].isin(['1Q', '2Q', '3Q', '4Q'])].sort_values("period_end", ascending=False)
+    ttm = {}
+    for col in ["revenue", "profit", "eps"]:
+        ttm[col + "_ttm"] = pd.to_numeric(df_q[col], errors="coerce").head(4).sum()
+    return ttm
+
+def is_broken_fundamental(fy_features, ttm_features):
+    """
+    Returns True if fundamentals are "broken", otherwise False.
+    Example rules: negative EPS, multi-year profit decline, TTM profit negative, etc.
+    """
+    if fy_features.get("eps_negative_years", 0) >= 2:
+        return True
+    if fy_features.get("profit_down_years", 0) >= 2:
+        return True
+    if fy_features.get("eps", 1e9) < 0:
+        return True
+    if ttm_features and ttm_features.get("profit_ttm", 1e9) < 0:
+        return True
+    #Piotroski F-Score (if < 1, considered "broken")
+    if fy_features.get("piotroski_f_score", 2) < 1:
+        return True
+    return False
+
+def piotroski_f_score(fy_df):
+    """
+    Calculates a basic Piotroski F-Score (0–9) based on annual financials.
+    Assumes fy_df is sorted with most recent first.
+    Returns int score or None.
+    """
+    if fy_df is None or fy_df.empty or len(fy_df) < 2:
+        return None
+    # Must have these columns: ['revenue', 'profit', 'eps']
+    f_score = 0
+    recent = fy_df.iloc[0]
+    prev = fy_df.iloc[1]
+
+    # 1. Positive net income
+    if recent['profit'] > 0:
+        f_score += 1
+    # 2. Positive operating cash flow (not available, skip or infer from profit)
+    # 3. Higher ROA this year vs last year (use profit/assets if available)
+    # 4. Quality of earnings: profit > 0 (already checked above)
+    # 5. No increase in leverage, liquidity, or shares outstanding (skip for now)
+    # 6. Higher current year gross margin vs prior year
+    if recent['revenue'] > prev['revenue']:
+        f_score += 1
+    # 7. Higher asset turnover year-over-year (not available)
+    # For JP stocks, available fields may limit checks; keep simple
+
+    # Score out of 2 for now (profit, revenue growth)
+    return f_score
+
+simulation/logger.py
+"""
+PJ Fire — Logger utility (PATCHED, FULL TRADE SCHEMA)
+Logs all trade, skip, and rejection events using a unified, structured format.
+Supports info, warning, and debug levels.
+"""
+
+from datetime import datetime
+import os
+import json
+
+LOG_USE_EMOJI = os.getenv("PJ_FIRE_LOG_USE_EMOJI", "1") == "1"
+EMOJI_TRADE = "💹" if LOG_USE_EMOJI else "[TRADE]"
+EMOJI_WARN = "⚠️" if LOG_USE_EMOJI else "[WARN]"
+EMOJI_INFO = "ℹ️" if LOG_USE_EMOJI else "[INFO]"
+
+try:
+    from config.config import LOG_PATH
+except ImportError:
+    LOG_PATH = None
+
+LOG_LEVEL = os.getenv("PJ_FIRE_LOG_LEVEL", "INFO")  # "DEBUG", "INFO", "WARN", "ERROR"
+
+def _timestamp():
+    return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+def log_trade_full(
+    trade_id=None, signal_date=None, buy_date=None, sell_date=None, ticker=None, quantity=None,
+    buy_price=None, sell_price=None, trade_type=None, strategy=None, regime=None, result=None, pl=None,
+    score=None, normalized_score=None, technicals=None, fundamentals=None, gpt_summary=None, gpt_decision=None,
+    news_url=None, reason=None, news_headlines=None, take_profit=None, stop_loss=None, extra=None
+):
+    """
+    Unified trade logger for all trade/skipped/rejection events.
+    Any missing fields will be set to None.
+    """
+    record = {
+        "trade_id": trade_id,
+        "signal_date": signal_date,
+        "buy_date": buy_date,
+        "sell_date": sell_date,
+        "ticker": ticker,
+        "quantity": quantity,
+        "buy_price": buy_price,
+        "sell_price": sell_price,
+        "trade_type": trade_type,
+        "strategy": strategy,
+        "regime": regime,
+        "result": result,
+        "pl": pl,
+        "score": score,
+        "normalized_score": normalized_score,
+        "technicals": technicals,
+        "fundamentals": fundamentals,
+        "gpt_summary": gpt_summary,
+        "gpt_decision": gpt_decision,
+        "news_url": news_url,
+        "reason": reason,
+        "news_headlines": news_headlines,
+        "take_profit": take_profit,
+        "stop_loss": stop_loss,
+        "logged_at": _timestamp()
+    }
+    # Merge in any extra fields
+    if extra and isinstance(extra, dict):
+        record.update(extra)
+    # Print and log as JSON line for structure and downstream parsing
+    msg = f"{EMOJI_TRADE} {json.dumps(record, ensure_ascii=False)}"
+    print(msg)
+    _log_to_file(msg)
+
+def log_warning(msg):
+    text = f"{EMOJI_WARN} {_timestamp()} {msg}"
+    print(text)
+    _log_to_file(text)
+
+def log_info(msg):
+    if LOG_LEVEL in ("DEBUG", "INFO"):
+        text = f"{EMOJI_INFO} {_timestamp()} {msg}"
+        print(text)
+        _log_to_file(text)
+
+def _log_to_file(msg):
+    if LOG_PATH:
+        try:
+            with open(LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(msg + "\n")
+        except Exception:
+            pass  # Fail silently if logging fails
+
+def log_debug(msg):
+    if LOG_LEVEL == "DEBUG":
+        text = f"[DEBUG] {_timestamp()} {msg}"
+        print(text)
+        _log_to_file(text)
+
+simulation/ml_scoring.py
+"""
+PJ Fire — ML Scoring Integration Module (XGBoost Version)
+- Supports model load, inference, and scoring for any candidate list.
+- Can be used in both backtest and simulation/production.
+"""
+
+import numpy as np
+import pandas as pd
+from typing import List, Dict, Any
+
+import xgboost as xgb
+import joblib
+import os
+
+ML_MODEL_PATH = "model/pjfire_ml_model_xgb.pkl"  # Change as needed
+
+# ---- FEATURE LIST: update to match your feature engineering ----
+MODEL_FEATURES = [
+    # Core technicals
+    "price_drop_pct",
+    "rsi_14",
+    "ma5", "ma25",
+    "volume_spike",
+    # Regime features
+    "market_mean_return",
+    "market_volatility",
+    "sector_mean_return",
+    "sector_volatility",
+    # Candlestick, zscore, atr, etc.
+    "zscore_20",
+    "atr_14",
+    "volatility5",
+    "candlestick_reversal",
+    # Fundamentals (optional, if present)
+    "eps", "eps_yoy", "profit", "profit_yoy", "revenue", "revenue_yoy",
+    "piotroski_f_score",
+    # Add more as needed
+]
+
+def extract_features(candidate: Dict[str, Any]) -> np.ndarray:
+    """
+    Extract feature vector from candidate dict for ML model.
+    """
+    feats = []
+    regime = candidate.get("raw_regime_features", {})
+    for key in MODEL_FEATURES:
+        if key in candidate:
+            feats.append(candidate[key])
+        elif key in regime:
+            feats.append(regime[key])
+        else:
+            feats.append(0.0)
+    return np.array(feats, dtype=float)
+
+def score_candidates_with_ml(candidates: List[Dict[str, Any]], model=None):
+    """
+    For each candidate, produce ML score (probability) and normalized score.
+    Attaches to each dict: .ml_score, .ml_score_norm (0-100).
+    """
+    if model is None:
+        if os.path.exists(ML_MODEL_PATH):
+            model = joblib.load(ML_MODEL_PATH)
+        else:
+            # Fallback: use random model if no real model found (REMOVE FOR PRODUCTION)
+            print("[WARN] No ML model found; using random scoring.")
+            for c in candidates:
+                c["ml_score"] = np.random.rand()
+                c["ml_score_norm"] = int(100 * c["ml_score"])
+            return candidates
+
+    X = np.array([extract_features(c) for c in candidates])
+    # XGBoost always supports predict_proba
+    probs = model.predict_proba(X)[:, 1]
+    max_prob, min_prob = np.max(probs), np.min(probs)
+    norm_scores = 100 * (probs - min_prob) / (max_prob - min_prob + 1e-8) if max_prob > min_prob else 100 * probs
+
+    for i, c in enumerate(candidates):
+        c["ml_score"] = float(probs[i])
+        c["ml_score_norm"] = int(norm_scores[i])
+    return candidates
+
+def train_dummy_model():
+    """
+    Trains and saves a dummy XGBoost classifier for testing.
+    This is for pipeline integration ONLY. Replace with your real data pipeline.
+    """
+    X = np.random.randn(100, len(MODEL_FEATURES))
+    y = (np.random.rand(100) > 0.5).astype(int)
+    model = xgb.XGBClassifier(use_label_encoder=False, eval_metric="logloss")
+    model.fit(X, y)
+    joblib.dump(model, ML_MODEL_PATH)
+    print(f"Dummy XGBoost model trained and saved to {ML_MODEL_PATH}")
+    return model
+
+if __name__ == "__main__":
+    # Train a dummy model if you just want to test end-to-end pipeline
+    train_dummy_model()
+    dummy_candidates = [{
+        "price_drop_pct": -0.04, "rsi_14": 25, "ma5": 1000, "ma25": 1100,
+        "volume_spike": 2.0, "zscore_20": -1.2, "atr_14": 50, "volatility5": 0.03,
+        "candlestick_reversal": 1,
+        "raw_regime_features": {
+            "market_mean_return": 0.01, "market_volatility": 0.02,
+            "sector_mean_return": 0.00, "sector_volatility": 0.025
+        },
+        "eps": 100, "eps_yoy": 0.15, "profit": 200, "profit_yoy": 0.12,
+        "revenue": 5000, "revenue_yoy": 0.10,
+        "piotroski_f_score": 2
+    } for _ in range(5)]
+    model = joblib.load(ML_MODEL_PATH)
+    scored = score_candidates_with_ml(dummy_candidates, model=model)
+    print(scored)
+
+simulation/news_reason_gpt.py
+"""
+PJ Fire — News Reasoning via GPT
+Uses GPT to classify price drop reasons based on headlines, price drop %, and date.
+All category mappings, scoring, and GPT config are centralized via config/config.py.
+"""
+
+import os
+import openai
+import time
+from dotenv import load_dotenv
+from config.config import (
+    OPENAI_API_KEY,
+    GPT_MODEL,
+    GPT_DELAY_SEC,
+    REASONING_CATEGORY_LABELS,
+    CATEGORY_SCORING,
+)
+
+load_dotenv()
+
+def categorize_reason_with_gpt(ticker, date, price_drop_pct, headlines):
+    """
+    Use GPT to categorize the reason for a stock drop.
+    Returns: category string (see REASONING_CATEGORY_LABELS)
+    """
+    openai.api_key = OPENAI_API_KEY
+
+    if isinstance(headlines, str):
+        headlines_text = headlines
+    elif isinstance(headlines, list):
+        headlines_text = "\n".join([f"- {h}" for h in headlines]) if headlines else "No news found."
+    else:
+        headlines_text = "No news found."
+
+    prompt = f"""
+ティッカー: {ticker}
+日付: {date}
+株価下落率: {price_drop_pct:.2f}%
+関連ニュース:
+{headlines_text}
+
+上記の情報をもとに、この株価下落の主な理由を以下のカテゴリから1つだけ選び、そのカテゴリ名のみを出力してください。
+
+1. misinterpreted_news – ニュースがあるが、市場が過剰反応や誤解をした場合
+2. slightly_bad_news – 軽度の悪材料、やや悪い決算やガイダンス
+3. very_bad_news – 明らかに悪材料（粉飾、不正、大幅赤字等）
+4. no_news – 関連ニュースなし。下落理由が不明
+5. macro_or_sector_drop – 市場全体またはセクター要因
+
+カテゴリ名のみ（例: misinterpreted_news）のみ答えてください。余計な説明は不要です。
+"""
+
+    try:
+        response = openai.chat.completions.create(
+            model=GPT_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=12,
+            temperature=0,
+        )
+        category = response.choices[0].message.content.strip()
+        # Validate result
+        if category not in REASONING_CATEGORY_LABELS:
+            print(f"[WARN] Unrecognized GPT category for {ticker} on {date}: '{category}'")
+            return "no_news"
+        return category
+    except Exception as e:
+        print(f"[ERROR] GPT categorization failed for {ticker} on {date}: {e}")
+        return "no_news"
+
+# Example usage:
+# cat = categorize_reason_with_gpt("7203", "2024-05-10", -0.07, ["決算悪化で急落", "新規IR発表"])
+# print(cat)
+
+simulation/ranker.py
+"""
+PJ Fire — Signal Ranker (Config-Driven, Clean, PATCHED)
+Scores and ranks candidate stocks after all filtering, using only config-driven parameters.
+Ensures candidates are never mutated in a way that breaks later logic.
+Outputs all fields needed for logging, trading, and analysis.
+"""
+
+from typing import List, Dict, Any
+from config.config import (
+    WEIGHTS,                 # dict, e.g. {"price_drop_pct": 3.0, ...}
+    SCORE_CUTOFF,            # minimum total score for candidate inclusion
+    TOP_N_RANK,              # candidates forwarded to signal stage
+    MAX_SIGNAL_PER_DAY,      # (optional) user-facing upper bound
+)
+
+def score_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Scores a single candidate based on config-driven weights.
+    Returns a new dict with score and normalized_score fields added.
+    Never mutates the original input dict.
+    """
+    # Defensive copy
+    c = candidate.copy()
+    # Required features: must default to 0 if missing
+    price_drop = abs(c.get("price_drop_pct", 0))
+    gpt_reason_score = c.get("gpt_reason_score", 0.0)
+    fundamental_strength = c.get("fundamental_strength", 0.0)
+    volume_spike = c.get("volume_spike", 0.0)
+
+    # Use config weights (no hardcoding)
+    score = (
+        WEIGHTS.get("price_drop_pct", 0.0) * price_drop +
+        WEIGHTS.get("gpt_reason_score", 0.0) * gpt_reason_score +
+        WEIGHTS.get("fundamental_strength", 0.0) * fundamental_strength +
+        WEIGHTS.get("volume_spike", 0.0) * volume_spike
+    )
+
+    # Optional: add more features as needed
+
+    c["score"] = score
+    # Simple normalization: scale out of 100 (max possible, or leave as-is if no upper bound)
+    c["normalized_score"] = round(min(score * 20, 100), 1)  # Example: rescale, cap at 100
+
+    return c
+
+def rank_candidates(candidates: List[Dict[str, Any]], top_n: int = None) -> List[Dict[str, Any]]:
+    """
+    Scores and ranks the candidate stocks.
+    Returns the top N ranked stocks as a list of dicts, sorted by descending score.
+    Outputs all required fields for downstream modules.
+    """
+    scored = [score_candidate(c) for c in candidates]
+    filtered = [c for c in scored if c['score'] >= SCORE_CUTOFF]
+    top_n = top_n or TOP_N_RANK
+    ranked = sorted(filtered, key=lambda x: x['score'], reverse=True)[:top_n]
+    return ranked
+
+def get_top_signals_for_day(
+    candidates: List[Dict[str, Any]], 
+    strategy: str = None,
+    regime: str = None
+) -> List[Dict[str, Any]]:
+    """
+    Returns the top signals to execute for the day, after all scoring/ranking.
+    If both TOP_N_RANK and MAX_SIGNAL_PER_DAY are set, the smaller value is enforced.
+    Propagates strategy/regime to output for downstream modules.
+    """
+    limit = min(TOP_N_RANK, MAX_SIGNAL_PER_DAY)
+    ranked = rank_candidates(candidates, top_n=limit)
+    for c in ranked:
+        if strategy:
+            c["strategy"] = strategy
+        if regime:
+            c["regime"] = regime
+    return ranked
+
+simulation/reasoning.py
+"""
+PJ Fire — Unified Reasoning Module (PATCHED)
+Categorizes reason for stock price drops, attaches all needed fields.
+Logs all candidate exclusions with reason and features.
+No silent skips. Robust error handling.
+"""
+
+import os
+import pandas as pd
+import time
+from config.config import (
+    REASONING_CATEGORY_LABELS,
+    SECTOR_ETF_MAP,
+    CATEGORY_SCORING,
+    UNIVERSE_CSV,
+    GPT_DELAY_SEC,
+    OPENAI_API_KEY,
+    GPT_MODEL,
+    EXCLUSION_KEYWORDS,
+)
+from simulation.db_utils import get_fundamentals, get_quarterly_fundamentals, get_prices
+from simulation.fundamental_features import extract_fy_features, extract_ttm_features, is_broken_fundamental
+from simulation.fetch_news import fetch_news_for_ticker
+from simulation.news_reason_gpt import categorize_reason_with_gpt
+from simulation.logger import log_info
+
+def contains_exclusion_keyword(headlines):
+    """Returns first matching exclusion keyword if found, else None."""
+    for keyword in EXCLUSION_KEYWORDS:
+        if keyword and keyword in str(headlines):
+            return keyword
+    return None
+
+def is_macro_or_sector_drop(
+    conn, ticker, drop_date, price_drop_pct, sector_code=None,
+    market_ticker="1306", sector_etf_map=SECTOR_ETF_MAP
+):
+    """
+    Returns True if drop is likely macro/sector-driven (ETF or sector mean).
+    """
+    try:
+        market_df = get_prices(conn, market_ticker)
+        m_row = market_df[market_df["date"] == drop_date]
+        if not m_row.empty:
+            market_idx = market_df.index[market_df["date"] == drop_date][0]
+            if market_idx > 0:
+                prev_market_close = market_df.iloc[market_idx-1]["close"]
+                market_return = (m_row.iloc[0]["close"] - prev_market_close) / prev_market_close
+            else:
+                market_return = 0
+        else:
+            market_return = 0
+    except Exception:
+        market_return = 0
+
+    sector_etf_return = None
+    if sector_etf_map and sector_code and sector_code in sector_etf_map:
+        sector_etf = sector_etf_map[sector_code]
+        try:
+            etf_df = get_prices(conn, sector_etf)
+            etf_row = etf_df[etf_df["date"] == drop_date]
+            if not etf_row.empty:
+                etf_idx = etf_df.index[etf_df["date"] == drop_date][0]
+                if etf_idx > 0:
+                    prev_etf_close = etf_df.iloc[etf_idx-1]["close"]
+                    if prev_etf_close != 0:
+                        sector_etf_return = (etf_row.iloc[0]["close"] - prev_etf_close) / prev_etf_close
+        except Exception:
+            sector_etf_return = None
+
+    sector_mean_return = None
+    if (sector_etf_return is None) and sector_code:
+        try:
+            universe = pd.read_csv(UNIVERSE_CSV, dtype=str)
+            sector_tickers = universe[universe["sector17"] == sector_code]["ticker"].tolist()
+            returns = []
+            for s in sector_tickers:
+                df = get_prices(conn, s)
+                s_row = df[df["date"] == drop_date]
+                if not s_row.empty:
+                    s_idx = df.index[df["date"] == drop_date][0]
+                    if s_idx > 0:
+                        prev_close = df.iloc[s_idx-1]["close"]
+                        if prev_close != 0:
+                            returns.append((s_row.iloc[0]["close"] - prev_close) / prev_close)
+            if returns:
+                sector_mean_return = sum(returns) / len(returns)
+        except Exception:
+            sector_mean_return = None
+
+    for ref_return in [market_return, sector_etf_return, sector_mean_return]:
+        if ref_return is not None:
+            if abs(price_drop_pct - ref_return) < 0.015:
+                return True
+            if price_drop_pct < 0 and abs(price_drop_pct) < abs(ref_return) * 1.5:
+                return True
+    return False
+
+def categorize_drop_reason(conn, ticker, drop_date, price_drop_pct, sector_code=None, use_gpt=True):
+    """
+    Returns:
+      reason_category: str
+      explanation: str (for logs/display)
+      fy_features: dict
+      ttm_features: dict
+      headlines: str
+      event_driven: bool
+    Always logs/skips with full reason and features if excluded.
+    """
+    # --- Macro/Sector check (first) ---
+    if is_macro_or_sector_drop(conn, ticker, drop_date, price_drop_pct, sector_code=sector_code):
+        msg = f"[EXCLUDED] {ticker} {drop_date} macro/sector drop detected"
+        print(msg)
+        log_info(msg)
+        return "macro_or_sector_drop", msg, {}, {}, "", False
+
+    # --- 1. Fetch news headlines ---
+    headlines = fetch_news_for_ticker(ticker, drop_date)
+    gpt_category = None
+
+    # --- 2. Pre-GPT exclusion keyword check ---
+    matched_kw = contains_exclusion_keyword(headlines)
+    if matched_kw:
+        explanation = f"[EXCLUDED] {ticker} {drop_date} keyword: {matched_kw}"
+        print(explanation)
+        log_info(explanation)
+        return "very_bad_news", explanation, {}, {}, headlines, False
+
+    # --- 3. Try GPT-based news categorization ---
+    if use_gpt:
+        gpt_category = categorize_reason_with_gpt(ticker, drop_date, price_drop_pct, headlines)
+        score = CATEGORY_SCORING.get(gpt_category, 0.0)
+        if score == 0.0:
+            explanation = f"[EXCLUDED] {ticker} {drop_date} due to GPT category: {gpt_category}"
+            print(explanation)
+            log_info(explanation)
+            return gpt_category, explanation, {}, {}, headlines, False
+
+    # --- 4. Fundamentals: FY + Quarterly/TTM ---
+    df_fy = get_fundamentals(conn, ticker, period_type="FY", n=5)
+    df_q = get_quarterly_fundamentals(conn, ticker, n=4)
+    fy_feat = extract_fy_features(df_fy) if not df_fy.empty else {}
+    ttm_feat = extract_ttm_features(df_q) if not df_q.empty else {}
+
+    # --- 5. Event-driven? (drop coincides with new FY/quarter disclosure) ---
+    event_driven = False
+    event_detail = ""
+    if not df_fy.empty:
+        try:
+            last_fy_disclose = pd.to_datetime(df_fy.iloc[0].get("period_end"))
+            if abs((pd.to_datetime(drop_date) - last_fy_disclose).days) <= 2:
+                event_driven = True
+                event_detail = f"Drop within 2 days of annual earnings ({last_fy_disclose.date()})"
+        except Exception:
+            pass
+    if not df_q.empty:
+        try:
+            last_q_disclose = pd.to_datetime(df_q.iloc[0].get("period_end"))
+            if abs((pd.to_datetime(drop_date) - last_q_disclose).days) <= 2:
+                event_driven = True
+                event_detail = f"Drop within 2 days of quarterly earnings ({last_q_disclose.date()})"
+        except Exception:
+            pass
+
+    # --- 6. Broken fundamental? ---
+    broken = is_broken_fundamental(fy_feat, ttm_feat)
+
+    # --- 7. Compose reason/explanation ---
+    explanation = ""
+    if gpt_category:
+        explanation = f"GPT reason: {gpt_category}. "
+    if event_driven and broken:
+        reason = "fundamental-driven"
+        explanation += (f"{event_detail}. EPS: {fy_feat.get('eps','?')}, EPS YoY: {fy_feat.get('eps_yoy','?'):.1%}, "
+                        f"Profit TTM: {ttm_feat.get('profit_ttm','?')}. Broken multi-year trend detected.")
+        print(f"[EXCLUDED] {ticker} {drop_date}: {reason} ({explanation})")
+        log_info(f"[EXCLUDED] {ticker} {drop_date}: {reason} ({explanation})")
+        return reason, explanation, fy_feat, ttm_feat, headlines, event_driven
+    elif broken:
+        reason = "broken"
+        explanation += "Stock failed fundamental health checks (negative EPS, profit downtrend, or negative TTM profit)."
+        print(f"[EXCLUDED] {ticker} {drop_date}: {reason} ({explanation})")
+        log_info(f"[EXCLUDED] {ticker} {drop_date}: {reason} ({explanation})")
+        return reason, explanation, fy_feat, ttm_feat, headlines, event_driven
+    elif gpt_category:
+        reason = gpt_category
+    else:
+        reason = "technical/unknown"
+        explanation += "No clear fundamental or news reason for this drop."
+
+    return reason, explanation, fy_feat, ttm_feat, headlines, event_driven
+
+def attach_reason_to_candidates(conn, candidates, use_gpt=True, verbose=False):
+    """
+    For a list of candidate dicts, attaches:
+      - reason_category
+      - reason_explanation
+      - fy_features
+      - ttm_features
+      - headlines
+    Logs and excludes candidates with macro, very_bad_news, fundamental-driven, broken.
+    Returns filtered & enriched list.
+    """
+    enriched = []
+    for c in candidates:
+        ticker = c["ticker"]
+        date = c["date"]
+        price_drop_pct = c.get("price_drop_pct", 0)
+        sector_code = c.get("sector17", None)
+        # Run canonical drop reason classifier
+        reason, explanation, fy_feat, ttm_feat, headlines, event_driven = categorize_drop_reason(
+            conn, ticker, date, price_drop_pct, sector_code=sector_code, use_gpt=use_gpt
+        )
+        if reason in ["very_bad_news", "macro_or_sector_drop", "fundamental-driven", "broken"]:
+            # PATCH: log every exclusion
+            if verbose:
+                print(f"[SKIP] {ticker} {date}: {reason} ({explanation})")
+            continue
+        candidate = c.copy()
+        candidate["reason_category"] = reason
+        candidate["reason_explanation"] = explanation
+        candidate["fy_features"] = fy_feat
+        candidate["ttm_features"] = ttm_feat
+        candidate["headlines"] = headlines
+        candidate["gpt_reason_score"] = CATEGORY_SCORING.get(reason, 0.0)
+        candidate["fundamental_strength"] = fy_feat.get("eps_yoy", 0) if fy_feat else 0
+        candidate["recent_earnings_release"] = event_driven
+        enriched.append(candidate)
+        if verbose:
+            print(f"[PASS] {ticker} {date}: {reason} ({explanation})")
+        if use_gpt:
+            time.sleep(GPT_DELAY_SEC)
+    return enriched
+
+simulation/regime.py
+import pandas as pd
+
+def calc_market_regime(market_df, lookback=20, threshold=0.03):
+    """
+    Detects market regime using rolling mean and volatility.
+    Returns one of: 'bull', 'bear', 'volatile', 'stable'
+    """
+    # Compute rolling returns
+    market_df = market_df.sort_values("date")
+    close = market_df["close"]
+    returns = close.pct_change().rolling(lookback).mean()
+    volatility = close.pct_change().rolling(lookback).std()
+
+    if len(returns) == 0:
+        return "stable"
+
+    mean_ret = returns.iloc[-1]
+    vol = volatility.iloc[-1]
+
+    if mean_ret > threshold and vol < threshold:
+        return "bull"
+    elif mean_ret < -threshold and vol < threshold:
+        return "bear"
+    elif vol >= threshold:
+        return "volatile"
+    else:
+        return "stable"
+
+def calc_sector_regime(sector_df, lookback=20, threshold=0.03):
+    """
+    Same as market regime but for sector ETF or average.
+    """
+    return calc_market_regime(sector_df, lookback, threshold)
+
+def is_regime_blocked(strategy: str, regime: str) -> bool:
+    """
+    Returns True if the given strategy should block signals under the given regime.
+    Centralized regime gating logic.
+    """
+    # Define per-strategy regime block rules
+    if strategy == "mean_reversion":
+        return regime in ("bear", "volatile")
+    elif strategy == "momentum":
+        # Example: momentum allowed in all regimes → no block
+        return False
+    else:
+        # Default: no blocking
+        return False
+
+
+simulation/save_fundamentals.py
+"""
+PJ Fire — Fundamentals Saver (FY + Quarterly, Config-Driven)
+Fetches full-year and quarterly fundamentals from J-Quants and stores to unified DB.
+All paths and thresholds from config.
+"""
+
+import os
+import json
+import sqlite3
+import requests
+import pandas as pd
+from datetime import datetime
+from dotenv import load_dotenv
+import argparse
+from config.config import (
+    SIM_DB_FILE,
+    BT_DB_FILE,
+    JQUANTS_EMAIL,
+    JQUANTS_PASSWORD,
+    UNIVERSE_CSV,
+    ENABLE_QUARTERLY_IMPORT,
+)
+from simulation.db_utils import init_pjfire_tables, insert_fundamentals
+
+load_dotenv()
+
+def get_id_token():
+    auth_url = "https://api.jquants.com/v1/token/auth_user"
+    refresh_url = "https://api.jquants.com/v1/token/auth_refresh"
+    try:
+        data = {"mailaddress": JQUANTS_EMAIL, "password": JQUANTS_PASSWORD}
+        r = requests.post(auth_url, data=json.dumps(data), headers={"Content-Type": "application/json"})
+        r.raise_for_status()
+        refresh_token = r.json()["refreshToken"]
+        r = requests.post(f"{refresh_url}?refreshtoken={refresh_token}")
+        r.raise_for_status()
+        return r.json()["idToken"]
+    except Exception as e:
+        print(f"[ERROR] Token retrieval failed: {e}")
+        return None
+
+def fetch_fundamentals_by_code(token, code):
+    url = f"https://api.jquants.com/v1/fins/statements?code={code}"
+    headers = {"Authorization": f"Bearer {token}"}
+    r = requests.get(url, headers=headers, timeout=30)
+    r.raise_for_status()
+    return r.json().get("statements", [])
+
+def store_fundamentals(df):
+    conn = sqlite3.connect(SIM_DB_FILE)
+    init_pjfire_tables(conn)
+    print(f"Will insert {len(df)} rows into {SIM_DB_FILE}")
+    print(df.head())
+    insert_fundamentals(conn, df)
+    print(f"✅ Saved fundamentals for {df['ticker'].nunique()} tickers.")
+    conn.close()
+
+def fetch_and_save_fundamentals():
+    token = get_id_token()
+    if not token:
+        print("[ERROR] No token, aborting.")
+        return
+
+    if os.path.exists(UNIVERSE_CSV):
+        tickers_df = pd.read_csv(UNIVERSE_CSV, dtype=str)
+        # Use "ticker" as both ticker and stock_code for J-Quants API
+        if "ticker" not in tickers_df.columns:
+            raise ValueError(f"{UNIVERSE_CSV} missing 'ticker' column.")
+        tickers_df["stock_code"] = tickers_df["ticker"]
+    else:
+        raise FileNotFoundError(f"{UNIVERSE_CSV} not found.")
+
+    all_records = []
+    N = len(tickers_df)
+    for idx, row in tickers_df.iterrows():
+        ticker = row["ticker"]
+        code = row["stock_code"]
+        try:
+            records = fetch_fundamentals_by_code(token, code)
+            df = pd.DataFrame(records)
+            if df.empty:
+                print(f"[{idx+1}/{N}] {ticker}: No data")
+                continue
+            # --- Only use supported period types and map "1Q累計" etc. ---
+            df["TypeOfCurrentPeriod"] = df["TypeOfCurrentPeriod"].replace({
+                "1Q累計": "1Q", "2Q累計": "2Q", "3Q累計": "3Q", "4Q累計": "4Q"
+            })
+            allowed_types = ["FY", "1Q", "2Q", "3Q", "4Q"]
+            df = df[df["TypeOfCurrentPeriod"].isin(allowed_types)]
+            for col in ["NetSales", "Profit", "EarningsPerShare"]:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            df["ticker"] = ticker
+            df["period_type"] = df["TypeOfCurrentPeriod"]
+            df["period_end"] = pd.to_datetime(df["CurrentPeriodEndDate"]).dt.strftime("%Y-%m-%d")
+            df = df[["ticker", "period_type", "period_end", "NetSales", "EarningsPerShare", "Profit"]]
+            df.rename(columns={
+                "NetSales": "revenue",
+                "EarningsPerShare": "eps",
+                "Profit": "profit"
+            }, inplace=True)
+            # --- Make sure period_end is string for SQLite ---
+            df["period_end"] = df["period_end"].astype(str)
+            all_records.append(df)
+            print(f"[{idx+1}/{N}] {ticker}: OK ({len(df)} rows)")
+        except Exception as e:
+            print(f"[{idx+1}/{N}] [WARN] {ticker}: {e}")
+        if (idx+1) % 25 == 0 or idx+1 == N:
+            print(f"[PROGRESS] Processed {idx+1} of {N} tickers...")
+
+    if all_records:
+        combined = pd.concat(all_records, ignore_index=True)
+        store_fundamentals(combined)
+    else:
+        print("⚠️ No fundamentals data collected.")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Save J-Quants fundamentals to PJ Fire DB.")
+    parser.add_argument('--db', choices=['sim', 'bt'], default='sim', help="Target database: sim (default) or bt")
+    args = parser.parse_args()
+
+    if args.db == 'sim':
+        db_file = SIM_DB_FILE
+    else:
+        db_file = BT_DB_FILE
+
+    # Patch: set the DB path for store_fundamentals
+    def store_fundamentals(df):
+        conn = sqlite3.connect(db_file)
+        init_pjfire_tables(conn)
+        print(f"Will insert {len(df)} rows into {db_file}")
+        print(df.head())
+        insert_fundamentals(conn, df)
+        print(f"✅ Saved fundamentals for {df['ticker'].nunique()} tickers.")
+        conn.close()
+
+    fetch_and_save_fundamentals()
+
+simulation/save_prices.py
+"""
+PJ Fire — Price Data Loader (Robust, Calendar-Aware)
+Fetches daily price data from J-Quants API, stores into the unified DB.
+Idempotent: Skips days/tickers already present. Only queries for trading days.
+"""
+
+import os
+import requests
+import pandas as pd
+import sqlite3
+import json
+from datetime import datetime, timedelta
+import argparse
+from dotenv import load_dotenv
+
+from config.config import (
+    SIM_DB_FILE,
+    BT_DB_FILE,
+    UNIVERSE_CSV,
+)
+from simulation.db_utils import init_pjfire_tables, insert_prices
+
+load_dotenv()
+
+JQUANTS_EMAIL = os.getenv("JQUANTS_EMAIL")
+JQUANTS_PASSWORD = os.getenv("JQUANTS_PASSWORD")
+API_BASE = "https://api.jquants.com"
+
+def get_id_token():
+    data = {"mailaddress": JQUANTS_EMAIL, "password": JQUANTS_PASSWORD}
+    r = requests.post(f"{API_BASE}/v1/token/auth_user", data=json.dumps(data), headers={"Content-Type": "application/json"})
+    r.raise_for_status()
+    refresh_token = r.json()["refreshToken"]
+    r = requests.post(f"{API_BASE}/v1/token/auth_refresh?refreshtoken={refresh_token}")
+    r.raise_for_status()
+    return r.json()["idToken"]
+
+def load_topix_tickers(patterns_csv=UNIVERSE_CSV):
+    df = pd.read_csv(patterns_csv, dtype=str)
+    return df["ticker"].astype(str).tolist()
+
+def get_trading_days(id_token, from_date, to_date):
+    url = f"https://api.jquants.com/v1/markets/trading_calendar?holidaydivision=1&from={from_date.replace('-','')}&to={to_date.replace('-','')}"
+    headers = {'Authorization': f'Bearer {id_token}'}
+    r = requests.get(url, headers=headers, timeout=30)
+    # Only dates with HolidayDivision == "1" are trading days
+    days = [x["Date"] for x in r.json().get("trading_calendar", []) if x["HolidayDivision"] == "1"]
+    return set(days)
+
+def get_latest_date_for_ticker(conn, ticker):
+    cur = conn.cursor()
+    cur.execute("SELECT MAX(date) FROM prices WHERE ticker = ?", (ticker,))
+    row = cur.fetchone()
+    return row[0] if row and row[0] else None
+
+def fetch_and_save_prices(start_date, end_date, tickers, db_path=SIM_DB_FILE, force=False):
+    id_token = get_id_token()
+    headers = {"Authorization": f"Bearer {id_token}"}
+    all_records = []
+    N = len(tickers)
+    print(f"[START] Fetching prices for {N} tickers ({start_date} to {end_date})")
+    trading_days = get_trading_days(id_token, start_date, end_date)
+
+    conn = sqlite3.connect(db_path)
+    init_pjfire_tables(conn)
+    for idx, code in enumerate(tickers, 1):
+        # Find the latest date present in the DB for this ticker
+        if not force:
+            latest_date = get_latest_date_for_ticker(conn, code)
+            fetch_start_date = start_date
+            if latest_date:
+                fetch_start_date = (pd.to_datetime(latest_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+                if pd.to_datetime(fetch_start_date) > pd.to_datetime(end_date):
+                    print(f"[{idx}/{N}] {code}: Up to date, skipping.")
+                    continue
+        else:
+            fetch_start_date = start_date  # Ignore DB and always backfill
+        # Build a list of trading days this ticker needs
+        needed_days = [d for d in trading_days if fetch_start_date <= d <= end_date]
+        if not needed_days:
+            print(f"[{idx}/{N}] {code}: No new trading days, skipping.")
+            continue
+        # J-Quants supports date ranges, but fetch just the needed span
+        url = f"{API_BASE}/v1/prices/daily_quotes?code={code}&from={fetch_start_date}&to={end_date}"
+        try:
+            resp = requests.get(url, headers=headers, timeout=30)
+            if not resp.ok:
+                print(f"[{idx}/{N}] [WARN] Failed for {code}: {resp.text}")
+                continue
+            rows = resp.json().get("daily_quotes", [])
+            # Only keep rows for actual trading days
+            for r in rows:
+                if r["Date"] in trading_days:
+                    all_records.append({
+                        "date": r["Date"],
+                        "ticker": r["Code"],
+                        "open": r["Open"],
+                        "high": r["High"],
+                        "low": r["Low"],
+                        "close": r["Close"],
+                        "volume": r["Volume"],
+                    })
+            print(f"[{idx}/{N}] {code}: {len(rows)} rows")
+        except Exception as e:
+            print(f"[{idx}/{N}] [ERROR] {code}: {e}")
+        if idx % 50 == 0 or idx == N:
+            print(f"[PROGRESS] Processed {idx} of {N} tickers...")
+
+    if all_records:
+        df = pd.DataFrame(all_records)
+        insert_prices(conn, df)
+        print(f"[COMPLETE] Saved {len(df)} price records to {db_path}")
+    else:
+        print("[COMPLETE] No records to save.")
+    conn.close()
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Save daily or bulk price data for PJ Fire.")
+    parser.add_argument("--start_date", type=str, default=None, help="YYYY-MM-DD for start of date range (defaults to today)")
+    parser.add_argument("--end_date", type=str, default=None, help="YYYY-MM-DD for end of date range (defaults to today)")
+    parser.add_argument("--bulk", action="store_true", help="If set, loads for the last 3 months by default")
+    parser.add_argument("--db", type=str, choices=["sim", "bt"], default="sim", help="Target DB: sim (default) or bt (backtest)")
+    parser.add_argument("--force", action="store_true", help="Force full backfill, ignore latest date in DB")
+    args = parser.parse_args()
+
+    tickers = load_topix_tickers()
+    today = datetime.now().date()
+    if args.bulk:
+        start_date = (today - timedelta(days=90)).strftime("%Y-%m-%d")
+        end_date = today.strftime("%Y-%m-%d")
+    else:
+        start_date = args.start_date or today.strftime("%Y-%m-%d")
+        end_date = args.end_date or today.strftime("%Y-%m-%d")
+
+    # Choose DB file
+    db_path = SIM_DB_FILE if args.db == "sim" else BT_DB_FILE
+
+    print(f"[INFO] Loading prices from {start_date} to {end_date} for {len(tickers)} tickers")
+    fetch_and_save_prices(start_date, end_date, tickers, db_path=db_path, force=args.force)
+    print("[FINISHED]")
+
+simulation/screening.py
+"""
+PJ Fire — Screening Logic (Regime-Aware, ML-Ready)
+- Adds regime features (market & sector) to every candidate.
+- Gating: skips mean reversion in 'bear' or 'volatile' market.
+- Logs summary stats for technical filter fails (counts + sample tickers).
+- Logs all higher-level (reasoning) exclusions individually.
+"""
+
+import os
+import pandas as pd
+from simulation.technical import add_indicators
+from simulation.db_utils import get_prices, get_fundamentals, get_quarterly_fundamentals
+from simulation.fundamental_features import extract_fy_features, extract_ttm_features, is_broken_fundamental
+from simulation.logger import log_info
+from simulation.regime import calc_market_regime, calc_sector_regime  # <--- new
+
+from config.config import (
+    UNIVERSE_CSV,
+    MIN_VOLUME,
+    DROP_PCT_THRESHOLD,
+    RSI_THRESHOLD,
+    USE_FUNDAMENTAL_FILTER,
+    MARKET_ETF,
+    SECTOR_ETF_MAP
+)
+
+TECH_FILTERS = [
+    "empty_data", "missing_date", "no_row_after_indicators", "low_volume", "no_prev_day", "prev_close_zero",
+    "fails_technical", "regime_blocked"
+]
+
+def load_universe():
+    df = pd.read_csv(UNIVERSE_CSV, dtype=str)
+    sector_col = "sector17" if "sector17" in df.columns else ("sector" if "sector" in df.columns else None)
+    if sector_col is None:
+        raise ValueError("Ticker universe CSV must have 'sector17' or 'sector' column.")
+    df = df.set_index("ticker")
+    return df, sector_col
+
+def screen_stocks(
+    conn, date,
+    drop_pct_threshold=DROP_PCT_THRESHOLD,
+    rsi_threshold=RSI_THRESHOLD,
+    min_volume=MIN_VOLUME,
+    strategy="mean_reversion",
+    regime=None  # ignore input; will set per candidate
+):
+    """
+    Returns list of candidate dicts for the given date (with sector17/sector and regime attached).
+    Regime is computed per-candidate and also attached as 'market_regime', 'sector_regime'.
+    Gating: mean reversion is skipped in bear/volatile regime.
+    """
+    universe, sector_col = load_universe()
+    candidates = []
+    fail_counts = {f: [] for f in TECH_FILTERS}
+
+    # --- Preload market ETF data for regime detection
+    market_df = get_prices(conn, MARKET_ETF)
+    if market_df.empty or date not in market_df["date"].values:
+        raise RuntimeError(f"Market ETF data missing for {date}")
+    market_regime = calc_market_regime(market_df[market_df["date"] <= date].tail(22))  # Use last 20-22 days
+
+    for ticker, meta in universe.iterrows():
+        sector_val = meta[sector_col]
+        df = get_prices(conn, ticker)
+        # --- Data present? ---
+        if df.empty:
+            fail_counts["empty_data"].append(ticker)
+            continue
+        if "date" not in df.columns or date not in df["date"].values:
+            fail_counts["missing_date"].append(ticker)
+            continue
+        df = add_indicators(df)
+        row = df[df["date"] == date]
+        if row.empty:
+            fail_counts["no_row_after_indicators"].append(ticker)
+            continue
+        row = row.iloc[0]
+        # --- Volume filter ---
+        try:
+            vol = float(row["volume"])
+        except Exception:
+            vol = 0
+        if vol < min_volume:
+            fail_counts["low_volume"].append(ticker)
+            continue
+        # --- Price drop filter ---
+        idxs = df.index[df["date"] == date]
+        if len(idxs) == 0:
+            fail_counts["no_row_after_indicators"].append(ticker)
+            continue
+        idx = idxs[0]
+        if idx == 0:
+            fail_counts["no_prev_day"].append(ticker)
+            continue
+        prev_close = df.iloc[idx-1]["close"]
+        if prev_close == 0:
+            fail_counts["prev_close_zero"].append(ticker)
+            continue
+        price_drop_pct = (row["close"] - prev_close) / prev_close
+
+        # --- Volume spike ---
+        start_idx = max(idx - 20, 0)
+        avg_volume = df.iloc[start_idx:idx]["volume"].mean() if idx > 0 else 0
+        volume_spike = (vol / avg_volume) if avg_volume > 0 else 0
+
+        # --- Technical filter ---
+        if price_drop_pct >= drop_pct_threshold or row["rsi_14"] >= rsi_threshold:
+            fail_counts["fails_technical"].append(ticker)
+            continue
+
+        # --- Fundamental filter (if enabled) ---
+        if USE_FUNDAMENTAL_FILTER:
+            df_fy = get_fundamentals(conn, ticker, period_type="FY", n=5)
+            df_q = get_quarterly_fundamentals(conn, ticker, n=4)
+            fy_feat = extract_fy_features(df_fy) if not df_fy.empty else {}
+            ttm_feat = extract_ttm_features(df_q) if not df_q.empty else {}
+            if is_broken_fundamental(fy_feat, ttm_feat):
+                continue
+
+        # --- Sector regime detection (ETF or peer mean) ---
+        sector_regime = None
+        if sector_val in SECTOR_ETF_MAP:
+            sector_etf = SECTOR_ETF_MAP[sector_val]
+            sector_df = get_prices(conn, sector_etf)
+            if not sector_df.empty and date in sector_df["date"].values:
+                sector_regime = calc_sector_regime(sector_df[sector_df["date"] <= date].tail(22))
+            else:
+                sector_regime = "stable"
+        else:
+            # fallback: stable (or you can code sector mean logic)
+            sector_regime = "stable"
+
+        # --- Regime gating: skip mean reversion in bear or volatile
+        if strategy == "mean_reversion" and market_regime in ("bear", "volatile"):
+            fail_counts["regime_blocked"].append(ticker)
+            continue
+
+        candidate = {
+            "ticker": ticker,
+            sector_col: sector_val,
+            "date": date,
+            "price": row["close"],
+            "price_drop_pct": price_drop_pct,
+            "rsi_14": row["rsi_14"],
+            "ma5": row["ma5"],
+            "ma25": row["ma25"],
+            "volume": vol,
+            "volume_spike": volume_spike,
+            "strategy": strategy,
+            "market_regime": market_regime,
+            "sector_regime": sector_regime,
+            "regime": market_regime,  # for downstream pipeline logic; change to combined if desired
+            "raw_regime_features": {  # for ML use
+                "market_mean_return": float(market_df["close"].pct_change(20).iloc[-1]),
+                "market_volatility": float(market_df["close"].pct_change().rolling(20).std().iloc[-1]),
+                "sector": sector_val,
+                "sector_mean_return": float(sector_df["close"].pct_change(20).iloc[-1]) if 'sector_df' in locals() and not sector_df.empty else 0.0,
+                "sector_volatility": float(sector_df["close"].pct_change().rolling(20).std().iloc[-1]) if 'sector_df' in locals() and not sector_df.empty else 0.0,
+            }
+        }
+        candidates.append(candidate)
+
+    # ---- LOG SUMMARY STATS (after loop) ----
+    total = len(universe)
+    msg_lines = [f"Screened {total} stocks on {date}:"]
+    for key in TECH_FILTERS:
+        count = len(fail_counts[key])
+        if count > 0:
+            # Show up to 3 sample tickers for each fail reason
+            samples = ", ".join(fail_counts[key][:3]) + ("..." if count > 3 else "")
+            msg_lines.append(f"  {key}: {count} ({samples})")
+    n_pass = len(candidates)
+    msg_lines.append(f"  Passed all technicals+regime: {n_pass}")
+    log_info(" | ".join(msg_lines))
+
+    return candidates
+
+if __name__ == "__main__":
+    import sqlite3
+    conn = sqlite3.connect("backtest/backtest_bt.db")
+    candidates = screen_stocks(conn, "2024-03-15")
+    print(pd.DataFrame(candidates).head())
+
+simulation/simulation_engine.py
+"""
+PJ Fire — Canonical Simulation Engine (Unified, Config-Driven, PATCHED)
+Handles virtual trading, positions, and cash for simulation and backtest.
+All buy/sell/forced exit logic centralized.
+Logging, portfolio, cash, and trade management.
+All config-driven (START_CASH, DEFAULT_LOT_SIZE, etc.).
+"""
+
+import pandas as pd
+import sqlite3
+from datetime import datetime
+from config.config import (
+    SIM_DB_FILE, 
+    BT_DB_FILE,
+    START_CASH,
+    DEFAULT_LOT_SIZE, 
+    FORCED_EXIT_THRESHOLD, 
+    DRAWDOWN_REDUCE_THRESHOLD, 
+    DRAWDOWN_STOP_THRESHOLD, 
+    ENTRY_BUFFER, 
+    STOP_LOSS_PCT, 
+    GAP_DOWN_LIMIT, 
+    MAX_HOLDING_DAYS, 
+    LOT_UNIT_SIZE,
+    ENABLE_SCORE_FILTER, 
+    SCORE_FILTER_THRESHOLD
+)
+from simulation.utils import get_next_trading_day
+from simulation.ranker import get_top_signals_for_day
+from simulation.db_utils import init_pjfire_tables, get_prices, get_cash, update_cash, update_portfolio
+from strategies.mean_reversion import generate_signals as generate_mean_reversion_signals
+from strategies.momentum import generate_signals as generate_momentum_signals
+
+PORTFOLIO_TABLE = "portfolio"
+TRADE_LOG_TABLE = "trades"
+CASH_TABLE = "cash"
+
+STRATEGY_FUNCTIONS = [
+    ("mean_reversion", generate_mean_reversion_signals),
+    ("momentum", generate_momentum_signals),
+]
+
+def init_simulation_db(db_path=SIM_DB_FILE, start_cash=START_CASH, start_date=None):
+    """
+    Ensures all tables exist and cash is initialized in the chosen DB.
+    Use db_path=BT_DB_FILE for backtest, SIM_DB_FILE for simulation.
+    If start_date is provided, use that for initial cash 'as_of'.
+    """
+    conn = sqlite3.connect(db_path)
+    init_pjfire_tables(conn)
+    c = conn.cursor()
+    c.execute(f"SELECT COUNT(*) FROM {CASH_TABLE}")
+    count = c.fetchone()[0]
+    if count == 0:
+        as_of = start_date if start_date else datetime.now().strftime("%Y-%m-%d")
+        c.execute(f"INSERT INTO {CASH_TABLE} (as_of, balance) VALUES (?, ?)", (as_of, start_cash))
+        conn.commit()
+    conn.close()
+
+def get_portfolio(conn):
+    return pd.read_sql(f"SELECT * FROM {PORTFOLIO_TABLE} WHERE status = 'open'", conn)
+
+def get_next_day_open(conn, ticker: str, date: str):
+    """Return (next_date, next_open) for ticker after given date, or (None, None)."""
+    df = get_prices(conn, ticker)
+    idxs = df.index[df["date"] == date]
+    if len(idxs) == 0:
+        return None, None
+    idx = idxs[0]
+    if idx >= len(df) - 1:
+        return None, None
+    row = df.iloc[idx + 1]
+    return row["date"], float(row["open"])
+
+def execute_next_day_buy(conn, signal, qty=DEFAULT_LOT_SIZE):
+    """Attempt a next-day entry based on MA5 buffer and gap-down rules."""
+    ticker = signal["ticker"]
+    date = signal["date"]
+    ma5 = signal.get("ma5")
+    close_price = signal.get("price")
+    next_date, next_open = get_next_day_open(conn, ticker, date)
+    if next_date is None:
+        print(f"[SKIP] No next-day price for {ticker} on {date}.")
+        return False, None, None
+    if ma5 is None or pd.isna(ma5):
+        print(f"[SKIP] Missing MA5 for {ticker} on {date}.")
+        return False, next_date, next_open
+    if next_open <= ma5 * (1 - ENTRY_BUFFER) and next_open >= close_price * (1 - GAP_DOWN_LIMIT):
+        executed = execute_buy(conn, ticker, next_open, qty, signal.get("score", 0), next_date, strategy=signal.get("strategy", "mean_reversion"), regime=signal.get("regime", "default"))
+        return executed, next_date, next_open
+    print(f"[SKIP] Entry criteria not met for {ticker} on {next_date} (open {next_open}).")
+    return False, next_date, next_open
+
+def execute_buy(conn, ticker, price, qty, signal_score, date, strategy="mean_reversion", regime="default"):
+    cash = get_cash(conn)
+    total_cost = price * qty
+    if cash < total_cost:
+        print(f"[SIM] Insufficient cash to buy {ticker}. Need {total_cost:.0f}, have {cash:.0f}. Skipping buy.")
+        log_trade_event(conn, ticker, "SKIPPED_NO_CASH", price, qty, signal_score, date, strategy, regime=regime, reason="Insufficient cash")
+        return False
+    update_portfolio(conn, ticker, date, qty, price, "open", strategy, signal_score, regime)
+    update_cash(conn, -qty * price)
+    log_trade_event(conn, ticker, "BUY", price, qty, signal_score, date, strategy, regime=regime, reason="Buy executed")
+    print(f"[SIM] Bought {qty}x {ticker} at {price} on {date}.")
+    return True
+
+def execute_sell(conn, ticker, price, date, reason="NormalExit", regime="default"):
+    c = conn.cursor()
+    c.execute(f"SELECT quantity, entry_price, strategy, signal_score, regime FROM {PORTFOLIO_TABLE} WHERE ticker = ? AND status = 'open'", (ticker,))
+    row = c.fetchone()
+    if not row:
+        print(f"[SIM] No position to sell for {ticker}.")
+        return False
+    qty, entry_price, strategy, signal_score, regime_val = row
+    regime = regime_val or regime
+    update_cash(conn, qty * price)
+    c.execute(f"UPDATE {PORTFOLIO_TABLE} SET status = 'closed' WHERE ticker = ? AND status = 'open'", (ticker,))
+    log_trade_event(conn, ticker, "SELL", price, qty, signal_score, date, strategy, regime=regime, reason=reason, entry_price=entry_price)
+    print(f"[SIM] Sold {qty}x {ticker} at {price} on {date}. Reason: {reason}")
+    conn.commit()
+    return True
+
+def log_trade_event(conn, ticker, side, price, qty, signal_score, date, strategy="mean_reversion", regime="default", reason="", entry_price=None):
+    cur = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # PATCH: add all required fields, even if placeholder/None (schema-unified)
+    cur.execute(f"""
+        INSERT INTO {TRADE_LOG_TABLE}
+        (datetime, ticker, quantity, price, trade_type, strategy, regime, reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (now, ticker, qty, price, side, strategy, regime, reason))
+    conn.commit()
+
+def get_dynamic_lot_size(conn):
+    # PATCH: always uses START_CASH as baseline
+    initial_cash = START_CASH
+    cash = get_cash(conn)
+    drawdown = (initial_cash - cash) / initial_cash
+    if drawdown >= DRAWDOWN_STOP_THRESHOLD:
+        return 0  # stop trading
+    elif drawdown >= DRAWDOWN_REDUCE_THRESHOLD:
+        return DEFAULT_LOT_SIZE // 2
+    return DEFAULT_LOT_SIZE
+
+def forced_exit_logic(conn, ranked_signals):
+    held_df = get_portfolio(conn)
+    for _, held in held_df.iterrows():
+        held_score = held.get("signal_score", 0)
+        ticker = held["ticker"]
+        for s in ranked_signals:
+            if s["score"] > held_score * (1 + FORCED_EXIT_THRESHOLD):
+                print(f"[FORCED EXIT] {ticker} -> {s['ticker']} (score {s['score']:.2f})")
+                execute_sell(conn, ticker, s["price"], s["date"], reason="ForcedExit", regime=held.get("regime", "default"))
+                lot_size = get_dynamic_lot_size(conn)
+                if lot_size > 0:
+                    _ = execute_next_day_buy(conn, s, qty=lot_size)
+                else:
+                    print("[FORCED EXIT] Trading paused due to drawdown.")
+                break
+
+def time_exit_logic(conn, current_date):
+    """Force-sell positions held longer than MAX_HOLDING_DAYS."""
+    held_df = get_portfolio(conn)
+    for _, held in held_df.iterrows():
+        entry_date = held.get("entry_date")
+        if not entry_date:
+            continue
+        days_held = (pd.to_datetime(current_date) - pd.to_datetime(entry_date)).days
+        if days_held >= MAX_HOLDING_DAYS:
+            ticker = held["ticker"]
+            df = get_prices(conn, ticker, start_date=current_date, end_date=current_date)
+            if not df.empty and "close" in df.columns:
+                exit_price = df.iloc[0]["close"]
+            else:
+                exit_price = held.get("entry_price", 0)
+            print(f"[TIME EXIT] {ticker} held {days_held} days. Closing at {exit_price}.")
+            execute_sell(conn, ticker, exit_price, current_date, reason="TimeStop", regime=held.get("regime", "default"))
+
+def run_simulation_for_day(date, db_path=SIM_DB_FILE):
+    """
+    Runs multi-strategy simulation pipeline for a single day.
+    For each strategy:
+    - Runs generate_signals()
+    - Collects ranked signals
+    After all strategies:
+    - Runs forced_exit_logic()
+    - Runs time_exit_logic()
+    - Executes buys for all selected signals.
+    """
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    init_pjfire_tables(conn)
+
+    # Collect signals from all strategies
+    all_signals = []
+
+    for strategy_name, strategy_func in STRATEGY_FUNCTIONS:
+        print(f"\n[RUN] Strategy: {strategy_name} | Date: {date}")
+        strategy_signals = strategy_func(conn, date)
+        if strategy_signals:
+            all_signals.extend(strategy_signals)
+            print(f"[RUN] {len(strategy_signals)} signals from {strategy_name} on {date}.")
+        else:
+            print(f"[RUN] No signals from {strategy_name} on {date}.")
+
+    if not all_signals:
+        print(f"\n[RUN] No signals from any strategy on {date}. Skipping forced/time exits and buys.")
+        conn.close()
+        return
+
+    # Forced exit step (global)
+    print(f"\n[RUN] Running forced exit logic...")
+    forced_exit_logic(conn, all_signals)
+
+    # Time-based exit step (global)
+    print(f"\n[RUN] Running time exit logic...")
+    time_exit_logic(conn, date)
+
+    # Execute buys
+    print(f"\n[RUN] Executing buys for {len(all_signals)} total signals...")
+    for sig in all_signals:
+        _ = execute_next_day_buy(conn, sig)
+
+    conn.close()
+
+def simulate_trade_for_backtest(
+    conn, signal, signal_date, trading_days,
+    return_result=False, execute_trade=False
+):
+    """
+    Simulates a single trade with production-ready filters.
+    - Only trades where: 
+        - 'no_news' reason,
+        - normalized_score >= 90,
+        - NOT "not enough FY data",
+        - NOT 'slightly_bad_news',
+        - Green candle on day N-1.
+    - Entry: next day open after signal (day N).
+    - If open gaps through TP or SL, SKIP trade.
+    - If SL > TP, SKIP trade.
+    - Exit: TP/SL/timeout as before.
+    Returns: result, pl, entry_date, entry_price, exit_date, exit_price, quantity
+    For skipped trades, simulates what would have happened.
+    """
+    ticker = signal["ticker"]
+    skip_flag = False
+    skip_reason = None
+
+    # 0. FY data error exclusion
+    if signal.get("fy_features", {}).get("error") == "Not enough FY data":
+        skip_flag = True
+        skip_reason = "SKIPPED_NOT_ENOUGH_FY"
+
+    # 1. Reason filter
+    elif signal.get("reason_category") != "no_news":
+        skip_flag = True
+        skip_reason = "SKIPPED_REASON"
+
+    # 2. Score filter
+    elif ENABLE_SCORE_FILTER and signal.get("normalized_score", 0) < SCORE_FILTER_THRESHOLD:
+        skip_flag = True
+        skip_reason = "SKIPPED_LOW_SCORE"
+
+    # 3. Slightly_bad_news filter
+    elif signal.get("reason_category") == "slightly_bad_news":
+        skip_flag = True
+        skip_reason = "SKIPPED_BAD_NEWS"
+
+    # 4. Green candle on day N-1 (yesterday)
+    else:
+        idx = trading_days.index(signal_date) if signal_date in trading_days else None
+        if idx is None or idx == 0:
+            skip_flag = True
+            skip_reason = "SKIPPED_NO_PREV_DAY"
+        else:
+            prev_day = trading_days[idx - 1]
+            prev_prices = get_prices(conn, ticker, start_date=prev_day, end_date=prev_day)
+            if prev_prices.empty or prev_prices["close"].iloc[0] <= prev_prices["open"].iloc[0]:
+                skip_flag = True
+                skip_reason = "SKIPPED_NO_GREEN_CANDLE"
+
+    # === Now always simulate entry and exit (as if entered) ===
+    next_entry_date = get_next_trading_day(signal_date, trading_days, 1)
+    if not next_entry_date:
+        if return_result:
+            return skip_reason or "NO_NEXT_ENTRY_DATE", 0, None, None, None, None, 0
+        else:
+            return
+
+    entry_prices = get_prices(conn, ticker, start_date=next_entry_date, end_date=next_entry_date)
+    if entry_prices.empty:
+        if return_result:
+            return skip_reason or "NO_ENTRY_PRICE", 0, next_entry_date, None, None, None, 0
+        else:
+            return
+
+    entry_price = entry_prices["open"].iloc[0]
+    entry_date = next_entry_date
+
+    target_tp = signal.get("ma5")
+    stop_loss = entry_price * (1 - STOP_LOSS_PCT)
+    max_holding = MAX_HOLDING_DAYS
+
+    # SKIP: If SL > TP, don't enter
+    if stop_loss > target_tp:
+        skip_flag = True
+        skip_reason = skip_reason or "SKIPPED_INVALID_SL_GT_TP"
+
+    # PRE-ENTRY: If open already gapped through TP or SL, SKIP this trade
+    if entry_price <= stop_loss:
+        skip_flag = True
+        skip_reason = skip_reason or "SKIPPED_GAP_AT_OPEN_SL"
+    elif entry_price >= target_tp:
+        skip_flag = True
+        skip_reason = skip_reason or "SKIPPED_GAP_AT_OPEN_TP"
+
+    # 8. Set quantity
+    if execute_trade:
+        cash = get_cash(conn)
+        max_lots = int(cash // (entry_price * LOT_UNIT_SIZE))
+        quantity = max_lots * LOT_UNIT_SIZE
+        if quantity == 0:
+            if return_result:
+                return skip_reason or "NO_CASH", 0, entry_date, entry_price, None, None, 0
+            else:
+                return
+    else:
+        quantity = DEFAULT_LOT_SIZE
+
+    result = "TIMEOUT"
+    exit_price = None
+    exit_date = None
+
+    # 9. Simulate holding days
+    for offset in range(0, max_holding):
+        check_date = get_next_trading_day(entry_date, trading_days, offset)
+        if not check_date:
+            break
+        day_prices = get_prices(conn, ticker, start_date=check_date, end_date=check_date)
+        if day_prices.empty:
+            continue
+        o = day_prices["open"].iloc[0]
+        h = day_prices["high"].iloc[0]
+        l = day_prices["low"].iloc[0]
+        c = day_prices["close"].iloc[0]
+        sl_hit = l <= stop_loss
+        tp_hit = h >= target_tp
+        if sl_hit and tp_hit:
+            exit_price = stop_loss
+            exit_date = check_date
+            result = "SL"
+            break
+        elif sl_hit:
+            exit_price = stop_loss
+            exit_date = check_date
+            result = "SL"
+            break
+        elif tp_hit:
+            exit_price = target_tp
+            exit_date = check_date
+            result = "TP"
+            break
+        exit_price = c
+        exit_date = check_date
+
+    pl = (exit_price - entry_price) * quantity if exit_price is not None else 0
+
+    # 10. If real trade, update cash/portfolio
+    if execute_trade and exit_price is not None:
+        update_cash(conn, -quantity * entry_price)
+        update_portfolio(conn, ticker, entry_date, quantity, entry_price, "open", signal.get("strategy", "mean_reversion"), signal.get("score", 0), signal.get("regime", "default"))
+        update_cash(conn, quantity * exit_price)
+        update_portfolio(conn, ticker, entry_date, quantity, entry_price, "closed", signal.get("strategy", "mean_reversion"), signal.get("score", 0), signal.get("regime", "default"))
+        log_trade_event(conn, ticker, "SELL", exit_price, quantity, signal.get("score", 0), exit_date, signal.get("strategy", "mean_reversion"), signal.get("regime", "default"), reason=result, entry_price=entry_price)
+
+    # === Final result: use SKIPPED_* as result if skip_flag, otherwise true simulation result ===
+    final_result = skip_reason if skip_flag else result
+    if return_result:
+        return final_result, pl, entry_date, entry_price, exit_date, exit_price, quantity
+
+simulation/technical.py
+"""
+PJ Fire — Technical Indicators
+All constants and windows are referenced from config if needed.
+"""
+
+import pandas as pd
+import numpy as np
+
+def calc_rsi(prices, window=14):
+    delta = prices.diff()
+    up = delta.clip(lower=0)
+    down = -delta.clip(upper=0)
+    ema_up = up.ewm(span=window, adjust=False).mean()
+    ema_down = down.ewm(span=window, adjust=False).mean()
+    rs = ema_up / (ema_down + 1e-8)
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+def calc_sma(prices, window):
+    return prices.rolling(window=window).mean()
+
+def calc_ema(prices, window):
+    return prices.ewm(span=window, adjust=False).mean()
+
+def calc_macd(prices, fast=12, slow=26, signal=9):
+    ema_fast = calc_ema(prices, fast)
+    ema_slow = calc_ema(prices, slow)
+    macd = ema_fast - ema_slow
+    macd_signal = macd.ewm(span=signal, adjust=False).mean()
+    return macd, macd_signal
+
+def calc_volatility(prices, window=20):
+    return prices.pct_change().rolling(window).std()
+
+def calc_bollinger_bands(prices, window=20, num_std=2):
+    sma = prices.rolling(window=window).mean()
+    std = prices.rolling(window=window).std()
+    upper_band = sma + num_std * std
+    lower_band = sma - num_std * std
+    return upper_band, lower_band
+
+def calc_zscore(prices, window=20):
+    mean = prices.rolling(window=window).mean()
+    std = prices.rolling(window=window).std()
+    zscore = (prices - mean) / (std + 1e-8)
+    return zscore
+
+def calc_atr(df, window=14):
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        (high - low).abs(),
+        (high - prev_close).abs(),
+        (low - prev_close).abs()
+    ], axis=1).max(axis=1)
+    atr = tr.rolling(window=window).mean()
+    return atr
+
+def calc_short_term_volatility(prices, window=5):
+    return prices.pct_change().rolling(window).std()
+
+def detect_candlestick_reversal(df):
+    """
+    Simple example: returns Series with 1 if bullish engulfing pattern, -1 if bearish, 0 otherwise.
+    """
+    open_ = df['open']
+    close = df['close']
+    prev_open = open_.shift(1)
+    prev_close = close.shift(1)
+    # Bullish engulfing: yesterday red, today green, today body engulfs yesterday
+    bullish = ((prev_close < prev_open) & (close > open_) & (close > prev_open) & (open_ < prev_close))
+    # Bearish engulfing: yesterday green, today red, today body engulfs yesterday
+    bearish = ((prev_close > prev_open) & (close < open_) & (open_ > prev_close) & (close < prev_open))
+    return bullish.astype(int) - bearish.astype(int)
+
+def add_indicators(df):
+    # Core indicators
+    df["rsi_14"] = calc_rsi(df["close"], window=14)
+    df["ma5"] = calc_sma(df["close"], window=5)
+    df["ma25"] = calc_sma(df["close"], window=25)
+    df["ema12"] = calc_ema(df["close"], window=12)
+    df["ema26"] = calc_ema(df["close"], window=26)
+    df["volatility20"] = calc_volatility(df["close"], window=20)
+    macd, macd_signal = calc_macd(df["close"])
+    df["macd"] = macd
+    df["macd_signal"] = macd_signal
+
+    # NEW: Bollinger Bands
+    upper, lower = calc_bollinger_bands(df["close"])
+    df["bb_upper"] = upper
+    df["bb_lower"] = lower
+
+    # NEW: Z-score
+    df["zscore_20"] = calc_zscore(df["close"])
+
+    # NEW: ATR
+    df["atr_14"] = calc_atr(df)
+
+    # NEW: Short-term volatility
+    df["volatility5"] = calc_short_term_volatility(df["close"], window=5)
+
+    # NEW: Candlestick reversal
+    df["candlestick_reversal"] = detect_candlestick_reversal(df)
+
+    return df
+
+simulation/utils.py
+import os
+import json
+import requests
+import pandas as pd
+import bisect
+from dotenv import load_dotenv
+from config.config import (
+    TRADING_CALENDAR_ENDPOINT,
+    TRADING_CALENDAR_CSV,
+    JQUANTS_EMAIL,
+    JQUANTS_PASSWORD,
+    JQ_BASE_URL,
+)
+
+load_dotenv()  # Ensure env vars loaded
+
+def get_id_token():
+    """
+    Retrieves J-Quants idToken using email and password from env/config.
+    """
+    data = {"mailaddress": JQUANTS_EMAIL, "password": JQUANTS_PASSWORD}
+    r = requests.post(f"{JQ_BASE_URL}/token/auth_user", data=json.dumps(data), headers={"Content-Type": "application/json"})
+    r.raise_for_status()
+    refresh_token = r.json()["refreshToken"]
+    r = requests.post(f"{JQ_BASE_URL}/token/auth_refresh?refreshtoken={refresh_token}")
+    r.raise_for_status()
+    return r.json()["idToken"]
+
+def fetch_and_save_trading_days_jquants(id_token, from_date="20230101", to_date="20301231"):
+    """
+    Fetches trading calendar from J-Quants API and saves all営業日 to a CSV.
+    Only rows with HolidayDivision == "1" or "2" are considered trading days.
+    """
+    url = f"{TRADING_CALENDAR_ENDPOINT}?from={from_date}&to={to_date}"
+    headers = {'Authorization': f'Bearer {id_token}'}
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+
+    calendar = response.json().get("trading_calendar", [])
+    if not calendar:
+        raise ValueError("No trading_calendar data returned from J-Quants.")
+
+    df = pd.DataFrame(calendar)
+    # Only営業日 (1: normal, 2: half-day, treat both as trading days)
+    df = df[df["HolidayDivision"].isin(["1", "2"])]
+    df = df[["Date", "HolidayDivision"]].sort_values("Date")
+    df.to_csv(TRADING_CALENDAR_CSV, index=False)
+    print(f"Saved {len(df)} trading days to {TRADING_CALENDAR_CSV}")
+
+def load_trading_days(trading_days_csv=TRADING_CALENDAR_CSV):
+    """
+    Loads trading days from CSV.
+    Returns a sorted list of trading day strings (YYYY-MM-DD).
+    """
+    df = pd.read_csv(trading_days_csv, dtype=str)
+    valid_days = df[df["HolidayDivision"].isin(["1", "2"])]["Date"].tolist()
+    valid_days.sort()
+    return valid_days
+
+def get_next_trading_day(current_date, trading_days, offset=1):
+    """
+    Returns the trading day string (YYYY-MM-DD) offset days after current_date.
+    trading_days: sorted list of trading days.
+    """
+    idx = bisect.bisect_right(trading_days, current_date)
+    next_idx = idx + offset - 1
+    if 0 <= next_idx < len(trading_days):
+        return trading_days[next_idx]
+    else:
+        return None
+
+if __name__ == "__main__":
+    id_token = get_id_token()
+    fetch_and_save_trading_days_jquants(id_token)
+    # Example: To use loaded days elsewhere
+    # trading_days = load_trading_days()
+    # print(trading_days[:5])  # print first 5 for sanity check
+
+strategies/mean_reversion.py
+"""
+PJ Fire — Mean Reversion Strategy Module (V3, Production-Ready)
+- Full pipeline for mean reversion:
+    - Screening
+    - Regime-aware gating
+    - GPT reasoning
+    - Reason category filter
+    - ML scoring
+    - Ranking
+    - Returns ready-to-execute signals
+"""
+
+from simulation.screening import screen_stocks
+from simulation.ml_scoring import score_candidates_with_ml
+from simulation.ranker import get_top_signals_for_day
+from simulation.reasoning import attach_reason_to_stocks
+from simulation.regime import is_regime_blocked
+
+from config.config import (
+    DROP_PCT_THRESHOLD,
+    RSI_THRESHOLD,
+    MIN_VOLUME,
+    USE_FUNDAMENTAL_FILTER,
+    SCORE_FILTER_THRESHOLD,
+    ENABLE_SCORE_FILTER
+)
+
+# Allowed reason categories for mean reversion
+ALLOWED_REASON_CATEGORIES = {"no_news", "misinterpreted_news"}
+
+def generate_signals(conn, date, regime_override=None, model=None):
+    """
+    Runs mean reversion screening, GPT reasoning, ML scoring, and ranking for the given date.
+    Returns ranked candidate signals ready for execution.
+    """
+    # 1. Screening step — already does regime-aware regime field computation
+    candidates = screen_stocks(
+        conn,
+        date,
+        drop_pct_threshold=DROP_PCT_THRESHOLD,
+        rsi_threshold=RSI_THRESHOLD,
+        min_volume=MIN_VOLUME,
+        strategy="mean_reversion"
+    )
+    if not candidates:
+        print(f"[MeanReversion] No candidates after screening on {date}.")
+        return []
+
+    # 2. Regime-aware gating (global for strategy)
+    market_regime = candidates[0]["market_regime"] if candidates else "unknown"
+    if is_regime_blocked("mean_reversion", market_regime):
+        print(f"[MeanReversion] Blocking signals due to regime={market_regime}.")
+        return []
+
+    # 3. Attach GPT reasoning
+    candidates = attach_reason_to_stocks(conn, date, candidates)
+    if not candidates:
+        print(f"[MeanReversion] No candidates after GPT reasoning on {date}.")
+        return []
+
+    # 4. Filter by allowed reason categories
+    candidates = [
+        c for c in candidates
+        if c.get("reason_category") in ALLOWED_REASON_CATEGORIES
+    ]
+    if not candidates:
+        print(f"[MeanReversion] No candidates after reason_category filter on {date}.")
+        return []
+
+    # 5. ML scoring
+    candidates = score_candidates_with_ml(candidates, model=model)
+
+    # 6. Score-based gating
+    if ENABLE_SCORE_FILTER:
+        candidates = [
+            c for c in candidates
+            if c.get("ml_score_norm", 0) >= SCORE_FILTER_THRESHOLD
+        ]
+        if not candidates:
+            print(f"[MeanReversion] No candidates passed ML score filter on {date}.")
+            return []
+
+    # 7. Final ranking
+    ranked_signals = get_top_signals_for_day(
+        candidates,
+        strategy="mean_reversion",
+        regime=regime_override or candidates[0]["regime"]
+    )
+    print(f"[MeanReversion] Final ranked signals on {date}: {len(ranked_signals)} candidates.")
+
+    return ranked_signals
+
+if __name__ == "__main__":
+    import sqlite3
+    conn = sqlite3.connect("backtest/backtest_bt.db")
+    signals = generate_signals(conn, "2024-03-15")
+    for s in signals:
+        print(s)
+
+strategies/momentum.py
+"""
+PJ Fire — Momentum Strategy Module (V2, Production-Ready)
+- Full pipeline for momentum:
+    - Screening
+    - Regime-aware gating
+    - ML scoring
+    - Ranking
+    - Returns ready-to-execute signals
+"""
+
+from simulation.screening import screen_stocks
+from simulation.ml_scoring import score_candidates_with_ml
+from simulation.ranker import get_top_signals_for_day
+from simulation.regime import is_regime_blocked
+
+from config.config import (
+    MIN_VOLUME,
+    SCORE_FILTER_THRESHOLD,
+    ENABLE_SCORE_FILTER
+)
+
+# Momentum strategy hyperparameters — tune later
+MOMENTUM_LOOKBACK_DAYS = 5
+MOMENTUM_MIN_RETURN = 0.03  # +3% over last 5 days
+VOLUME_SPIKE_THRESHOLD = 1.5  # 1.5x avg volume
+
+def generate_signals(conn, date, regime_override=None, model=None):
+    """
+    Runs momentum screening, ML scoring, and ranking for the given date.
+    Returns ranked candidate signals ready for execution.
+    """
+    # 1. Screening step — base screening with no RSI / price_drop filters
+    candidates = screen_stocks(
+        conn,
+        date,
+        drop_pct_threshold=-1.0,  # disable price drop filter for momentum
+        rsi_threshold=999,        # disable RSI filter
+        min_volume=MIN_VOLUME,
+        strategy="momentum"
+    )
+    if not candidates:
+        print(f"[Momentum] No candidates after base screening on {date}.")
+        return []
+
+    # 2. Regime-aware gating (global for strategy)
+    market_regime = candidates[0]["market_regime"] if candidates else "unknown"
+    if is_regime_blocked("momentum", market_regime):
+        print(f"[Momentum] Blocking signals due to regime={market_regime}.")
+        return []
+
+    # 3. Apply simple momentum logic — filter on recent price momentum and volume spike
+    filtered_candidates = []
+    for c in candidates:
+        ma5 = c.get("ma5", 0)
+        ma25 = c.get("ma25", 0)
+        momentum_signal = (ma5 > ma25)
+        volume_ok = c.get("volume_spike", 0) >= VOLUME_SPIKE_THRESHOLD
+        price_ok = c.get("price_drop_pct", 0) >= MOMENTUM_MIN_RETURN  # positive return
+
+        if momentum_signal and volume_ok and price_ok:
+            filtered_candidates.append(c)
+
+    if not filtered_candidates:
+        print(f"[Momentum] No candidates passed momentum filters on {date}.")
+        return []
+
+    # 4. ML scoring
+    filtered_candidates = score_candidates_with_ml(filtered_candidates, model=model)
+
+    # 5. Score-based gating
+    if ENABLE_SCORE_FILTER:
+        filtered_candidates = [
+            c for c in filtered_candidates
+            if c.get("ml_score_norm", 0) >= SCORE_FILTER_THRESHOLD
+        ]
+        if not filtered_candidates:
+            print(f"[Momentum] No candidates passed ML score filter on {date}.")
+            return []
+
+    # 6. Final ranking
+    ranked_signals = get_top_signals_for_day(
+        filtered_candidates,
+        strategy="momentum",
+        regime=regime_override or filtered_candidates[0]["regime"]
+    )
+    print(f"[Momentum] Final ranked signals on {date}: {len(ranked_signals)} candidates.")
+
+    return ranked_signals
+
+if __name__ == "__main__":
+    import sqlite3
+    conn = sqlite3.connect("backtest/backtest_bt.db")
+    signals = generate_signals(conn, "2024-03-15")
+    for s in signals:
+        print(s)

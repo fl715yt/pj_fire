@@ -26,12 +26,19 @@ from config.config import (
     SCORE_FILTER_THRESHOLD
 )
 from simulation.utils import get_next_trading_day
-from simulation.ranker import get_top_signals_for_day
+from strategies.common.ranker import get_top_signals_for_day
 from simulation.db_utils import init_pjfire_tables, get_prices, get_cash, update_cash, update_portfolio
+from strategies.mean_reversion.generate_signals import generate_signals as generate_mean_reversion_signals
+from strategies.momentum.generate_signals import generate_signals as generate_momentum_signals
 
 PORTFOLIO_TABLE = "portfolio"
 TRADE_LOG_TABLE = "trades"
 CASH_TABLE = "cash"
+
+STRATEGY_FUNCTIONS = [
+    ("mean_reversion", generate_mean_reversion_signals),
+    ("momentum", generate_momentum_signals),
+]
 
 def init_simulation_db(db_path=SIM_DB_FILE, start_cash=START_CASH, start_date=None):
     """
@@ -79,48 +86,49 @@ def execute_next_day_buy(conn, signal, qty=DEFAULT_LOT_SIZE):
         print(f"[SKIP] Missing MA5 for {ticker} on {date}.")
         return False, next_date, next_open
     if next_open <= ma5 * (1 - ENTRY_BUFFER) and next_open >= close_price * (1 - GAP_DOWN_LIMIT):
-        executed = execute_buy(conn, ticker, next_open, qty, signal.get("score", 0), next_date, strategy=signal.get("strategy", "main"))
+        executed = execute_buy(conn, ticker, next_open, qty, signal.get("score", 0), next_date, strategy=signal.get("strategy", "mean_reversion"), regime=signal.get("regime", "default"))
         return executed, next_date, next_open
     print(f"[SKIP] Entry criteria not met for {ticker} on {next_date} (open {next_open}).")
     return False, next_date, next_open
 
-def execute_buy(conn, ticker, price, qty, signal_score, date, strategy="main"):
+def execute_buy(conn, ticker, price, qty, signal_score, date, strategy="mean_reversion", regime="default"):
     cash = get_cash(conn)
     total_cost = price * qty
     if cash < total_cost:
         print(f"[SIM] Insufficient cash to buy {ticker}. Need {total_cost:.0f}, have {cash:.0f}. Skipping buy.")
-        log_trade_event(conn, ticker, "SKIPPED_NO_CASH", price, qty, signal_score, date, strategy, reason="Insufficient cash")
+        log_trade_event(conn, ticker, "SKIPPED_NO_CASH", price, qty, signal_score, date, strategy, regime=regime, reason="Insufficient cash")
         return False
-    update_portfolio(conn, ticker, date, qty, price, "open", strategy, signal_score)
+    update_portfolio(conn, ticker, date, qty, price, "open", strategy, signal_score, regime)
     update_cash(conn, -qty * price)
-    log_trade_event(conn, ticker, "BUY", price, qty, signal_score, date, strategy, reason="Buy executed")
+    log_trade_event(conn, ticker, "BUY", price, qty, signal_score, date, strategy, regime=regime, reason="Buy executed")
     print(f"[SIM] Bought {qty}x {ticker} at {price} on {date}.")
     return True
 
-def execute_sell(conn, ticker, price, date, reason="NormalExit"):
+def execute_sell(conn, ticker, price, date, reason="NormalExit", regime="default"):
     c = conn.cursor()
-    c.execute(f"SELECT quantity, entry_price, strategy, signal_score FROM {PORTFOLIO_TABLE} WHERE ticker = ? AND status = 'open'", (ticker,))
+    c.execute(f"SELECT quantity, entry_price, strategy, signal_score, regime FROM {PORTFOLIO_TABLE} WHERE ticker = ? AND status = 'open'", (ticker,))
     row = c.fetchone()
     if not row:
         print(f"[SIM] No position to sell for {ticker}.")
         return False
-    qty, entry_price, strategy, signal_score = row
+    qty, entry_price, strategy, signal_score, regime_val = row
+    regime = regime_val or regime
     update_cash(conn, qty * price)
     c.execute(f"UPDATE {PORTFOLIO_TABLE} SET status = 'closed' WHERE ticker = ? AND status = 'open'", (ticker,))
-    log_trade_event(conn, ticker, "SELL", price, qty, signal_score, date, strategy, reason=reason, entry_price=entry_price)
+    log_trade_event(conn, ticker, "SELL", price, qty, signal_score, date, strategy, regime=regime, reason=reason, entry_price=entry_price)
     print(f"[SIM] Sold {qty}x {ticker} at {price} on {date}. Reason: {reason}")
     conn.commit()
     return True
 
-def log_trade_event(conn, ticker, side, price, qty, signal_score, date, strategy="main", reason="", entry_price=None):
+def log_trade_event(conn, ticker, side, price, qty, signal_score, date, strategy="mean_reversion", regime="default", reason="", entry_price=None):
     cur = conn.cursor()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     # PATCH: add all required fields, even if placeholder/None (schema-unified)
     cur.execute(f"""
-        INSERT INTO {TRADE_LOG_TABLE} 
-        (datetime, ticker, quantity, price, trade_type, strategy, reason)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (now, ticker, qty, price, side, strategy, reason))
+        INSERT INTO {TRADE_LOG_TABLE}
+        (datetime, ticker, quantity, price, trade_type, strategy, regime, reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (now, ticker, qty, price, side, strategy, regime, reason))
     conn.commit()
 
 def get_dynamic_lot_size(conn):
@@ -142,7 +150,7 @@ def forced_exit_logic(conn, ranked_signals):
         for s in ranked_signals:
             if s["score"] > held_score * (1 + FORCED_EXIT_THRESHOLD):
                 print(f"[FORCED EXIT] {ticker} -> {s['ticker']} (score {s['score']:.2f})")
-                execute_sell(conn, ticker, s["price"], s["date"], reason="ForcedExit")
+                execute_sell(conn, ticker, s["price"], s["date"], reason="ForcedExit", regime=held.get("regime", "default"))
                 lot_size = get_dynamic_lot_size(conn)
                 if lot_size > 0:
                     _ = execute_next_day_buy(conn, s, qty=lot_size)
@@ -166,22 +174,53 @@ def time_exit_logic(conn, current_date):
             else:
                 exit_price = held.get("entry_price", 0)
             print(f"[TIME EXIT] {ticker} held {days_held} days. Closing at {exit_price}.")
-            execute_sell(conn, ticker, exit_price, current_date, reason="TimeStop")
+            execute_sell(conn, ticker, exit_price, current_date, reason="TimeStop", regime=held.get("regime", "default"))
 
-def run_simulation_for_day(candidates, date, db_path=SIM_DB_FILE):
+def run_simulation_for_day(date, db_path=SIM_DB_FILE):
     """
-    Given pre-scored and filtered candidates, runs buy/sell logic for a single day.
+    Runs multi-strategy simulation pipeline for a single day.
+    For each strategy:
+    - Runs generate_signals()
+    - Collects ranked signals
+    After all strategies:
+    - Runs forced_exit_logic()
+    - Runs time_exit_logic()
+    - Executes buys for all selected signals.
     """
+    import sqlite3
     conn = sqlite3.connect(db_path)
     init_pjfire_tables(conn)
-    ranked = get_top_signals_for_day(candidates)
-    print(f"Top signals for {date}:")
-    for sig in ranked:
-        print(sig)
-    forced_exit_logic(conn, ranked)
+
+    # Collect signals from all strategies
+    all_signals = []
+
+    for strategy_name, strategy_func in STRATEGY_FUNCTIONS:
+        print(f"\n[RUN] Strategy: {strategy_name} | Date: {date}")
+        strategy_signals = strategy_func(conn, date)
+        if strategy_signals:
+            all_signals.extend(strategy_signals)
+            print(f"[RUN] {len(strategy_signals)} signals from {strategy_name} on {date}.")
+        else:
+            print(f"[RUN] No signals from {strategy_name} on {date}.")
+
+    if not all_signals:
+        print(f"\n[RUN] No signals from any strategy on {date}. Skipping forced/time exits and buys.")
+        conn.close()
+        return
+
+    # Forced exit step (global)
+    print(f"\n[RUN] Running forced exit logic...")
+    forced_exit_logic(conn, all_signals)
+
+    # Time-based exit step (global)
+    print(f"\n[RUN] Running time exit logic...")
     time_exit_logic(conn, date)
-    for sig in ranked:
+
+    # Execute buys
+    print(f"\n[RUN] Executing buys for {len(all_signals)} total signals...")
+    for sig in all_signals:
         _ = execute_next_day_buy(conn, sig)
+
     conn.close()
 
 def simulate_trade_for_backtest(
@@ -329,10 +368,10 @@ def simulate_trade_for_backtest(
     # 10. If real trade, update cash/portfolio
     if execute_trade and exit_price is not None:
         update_cash(conn, -quantity * entry_price)
-        update_portfolio(conn, ticker, entry_date, quantity, entry_price, "OPEN", signal.get("strategy", "mean_reversion"), signal.get("score", 0))
+        update_portfolio(conn, ticker, entry_date, quantity, entry_price, "open", signal.get("strategy", "mean_reversion"), signal.get("score", 0), signal.get("regime", "default"))
         update_cash(conn, quantity * exit_price)
-        update_portfolio(conn, ticker, entry_date, quantity, entry_price, "CLOSED", signal.get("strategy", "mean_reversion"), signal.get("score", 0))
-        log_trade_event(conn, ticker, "SELL", exit_price, quantity, signal.get("score", 0), exit_date, signal.get("strategy", "mean_reversion"), reason=result, entry_price=entry_price)
+        update_portfolio(conn, ticker, entry_date, quantity, entry_price, "closed", signal.get("strategy", "mean_reversion"), signal.get("score", 0), signal.get("regime", "default"))
+        log_trade_event(conn, ticker, "SELL", exit_price, quantity, signal.get("score", 0), exit_date, signal.get("strategy", "mean_reversion"), signal.get("regime", "default"), reason=result, entry_price=entry_price)
 
     # === Final result: use SKIPPED_* as result if skip_flag, otherwise true simulation result ===
     final_result = skip_reason if skip_flag else result

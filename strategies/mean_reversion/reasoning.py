@@ -19,7 +19,7 @@ from config.config import (
     EXCLUSION_KEYWORDS,
 )
 from simulation.db_utils import get_fundamentals, get_quarterly_fundamentals, get_prices
-from simulation.fundamental_features import extract_fy_features, extract_ttm_features, is_broken_fundamental
+from strategies.common.fundamental_features import extract_fy_features, extract_ttm_features, is_broken_fundamental
 from simulation.fetch_news import fetch_news_for_ticker
 from simulation.news_reason_gpt import categorize_reason_with_gpt
 from simulation.logger import log_info
