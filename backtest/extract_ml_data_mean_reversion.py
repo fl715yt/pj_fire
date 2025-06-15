@@ -1,15 +1,3 @@
-"""
-PJ Fire — Mean Reversion ML Training Data Extraction (ALL FEATURES)
-
-- Uses full config thresholds from config/config.py
-- Reads tickers from topic_company_list.csv, trims one trailing zero if ticker is 5 digits and ends in 0
-- Builds a day-by-day candidate list until Google CSE query count would exceed 100
-- For every candidate:
-    - Collects MODEL_FEATURES as of the signal date (including reason_category and green_candle_n_1)
-    - Computes binary label (TP hit in 3 days: 1, else 0)
-    - Outputs one row per signal
-"""
-
 import pandas as pd
 import sqlite3
 from tqdm import tqdm
@@ -17,7 +5,11 @@ from tqdm import tqdm
 from config.config import DROP_PCT_THRESHOLD, RSI_THRESHOLD, MIN_VOLUME, START_DATE, END_DATE
 from strategies.common.screening import screen_stocks
 from strategies.common.technical import get_ma_from_db
-from simulation.fetch_news import fetch_news_for_ticker
+from news_apis.quota_manager import NewsQuotaManager
+from news_apis.google_cse_fetcher import GoogleCSEFetcher
+from news_apis.gnews_fetcher import GNewsFetcher
+from news_apis.brave_news_fetcher import BraveNewsFetcher
+from news_apis.newsapi_fetcher import NewsAPIFetcher
 from strategies.mean_reversion.reasoning import categorize_drop_reason
 
 DB_PATH = "backtest/backtest_bt.db"
@@ -26,7 +18,6 @@ TOPIX_CSV = "topix_company_list.csv"
 # 1. Read tickers
 df_topic = pd.read_csv(TOPIX_CSV)
 ALL_TICKERS = ["{}0".format(str(x).rstrip("0")) if len(str(x)) == 4 else str(x) for x in df_topic["ticker"]]
-# print(ALL_TICKERS)
 
 # 2. Get trading dates (from your price table or a calendar)
 conn = sqlite3.connect(DB_PATH)
@@ -37,17 +28,10 @@ dates_df = pd.read_sql(
 )
 ALL_DATES = dates_df["date"].tolist()
 
-# 3. Build candidate dates list with Google CSE query budget
+# 3. Build candidate dates list with API query budget
 selected_dates = []
 cumulative_queries = 0
 for date in ALL_DATES:
-    num_candidates = 0
-    for ticker in ALL_TICKERS:
-        # Only count if a candidate (otherwise don't count)
-        # You may optimize this with a single screening call per date.
-        pass  # We'll do screening for real below
-    # Assume: 1 query per ticker if that ticker is a candidate for the date
-    # We'll do this efficiently below by screening per day
     candidates = screen_stocks(
         conn,
         date,
@@ -76,19 +60,23 @@ for date in tqdm(selected_dates, desc="Extracting features per date"):
     )
     for c in candidates:
         ticker = c["ticker"]
-        # Reason category (news fetch + gpt reasoning)
+        # News fetching and logging API source/result
+        fetchers = [GoogleCSEFetcher(), GNewsFetcher(), BraveNewsFetcher(), NewsAPIFetcher()]
+        news_manager = NewsQuotaManager(fetchers)
         try:
-            news = fetch_news_for_ticker(ticker, date)
-        except Exception:
-            news = []
+            headlines, api_used = news_manager.fetch_news(ticker, date)
+        except Exception as e:
+            headllines = []
+            api_used = "none"
+        # Reason category (news + GPT reasoning)
         try:
             reason_result = categorize_drop_reason(
                 ticker=ticker,
                 date=date,
                 price_drop_pct=c.get("price_drop_pct", 0.0),
-                news_items=news
+                news_items=headlines
             )
-            reason_category = reason_result["reason_category"]
+            reason_category = reason_result.get("reason_category", "unknown")]
         except Exception:
             reason_category = "unknown"
 
@@ -135,7 +123,10 @@ for date in tqdm(selected_dates, desc="Extracting features per date"):
             **features,
             "reason_category": reason_category,
             "green_candle_n_1": green_candle_n_1,
-            "label": tp_label
+            "label": tp_label,
+            "news_api_used": api_used,
+            "news_api_status": api_status,
+            "headlines": news
         }
         rows.append(row)
 

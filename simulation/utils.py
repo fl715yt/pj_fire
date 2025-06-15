@@ -10,6 +10,7 @@ from config.config import (
     JQUANTS_EMAIL,
     JQUANTS_PASSWORD,
     JQ_BASE_URL,
+    VARIANT_CSV
 )
 
 load_dotenv()  # Ensure env vars loaded
@@ -68,6 +69,14 @@ def get_next_trading_day(current_date, trading_days, offset=1):
         return trading_days[next_idx]
     else:
         return None
+
+def get_ticker_to_variants():
+    variant_df = pd.read_csv(VARIANT_CSV, dtype=str)
+    variant_df["ticker"] = variant_df["ticker"].apply(lambda code: code[:-1] if len(code) == 5 and code.endswith("0") else code)
+    return {
+        row["ticker"]: [v.strip() for v in str(row["variants"]).split(" / ") if v.strip() and not v.strip().isdigit()]
+        for _, row in variant_df.iterrows()
+    }
 
 if __name__ == "__main__":
     id_token = get_id_token()

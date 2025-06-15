@@ -20,9 +20,17 @@ from config.config import (
 )
 from simulation.db_utils import get_fundamentals, get_quarterly_fundamentals, get_prices
 from strategies.common.fundamental_features import extract_fy_features, extract_ttm_features, is_broken_fundamental
-from simulation.fetch_news import fetch_news_for_ticker
+from news_apis.quota_manager import NewsQuotaManager
 from simulation.news_reason_gpt import categorize_reason_with_gpt
+from news_apis.google_cse_fetcher import GoogleCSEFetcher
+from news_apis.gnews_fetcher import GNewsFetcher
+from news_apis.brave_news_fetcher import BraveNewsFetcher
+from news_apis.newsapi_fetcher import NewsAPIFetcher
 from simulation.logger import log_info
+
+# At the top of the module, once:
+fetchers = [GoogleCSEFetcher(), GNewsFetcher(), BraveNewsFetcher(), NewsAPIFetcher()]
+news_manager = NewsQuotaManager(fetchers)
 
 def contains_exclusion_keyword(headlines):
     """Returns first matching exclusion keyword if found, else None."""
@@ -115,7 +123,11 @@ def categorize_drop_reason(conn, ticker, drop_date, price_drop_pct, sector_code=
         return "macro_or_sector_drop", msg, {}, {}, "", False
 
     # --- 1. Fetch news headlines ---
-    headlines = fetch_news_for_ticker(ticker, drop_date)
+    try:
+        headlines, api_used = news_manager.fetch_news(ticker, drop_date)
+    except Exception as e:
+        headlines = []
+        api_used = "unknown"
     gpt_category = None
 
     # --- 2. Pre-GPT exclusion keyword check ---

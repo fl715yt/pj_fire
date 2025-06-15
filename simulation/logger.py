@@ -7,11 +7,11 @@ Supports info, warning, and debug levels.
 from datetime import datetime
 import os
 import json
+from config.config import LOG_EMOJI
 
-LOG_USE_EMOJI = os.getenv("PJ_FIRE_LOG_USE_EMOJI", "1") == "1"
-EMOJI_TRADE = "💹" if LOG_USE_EMOJI else "[TRADE]"
-EMOJI_WARN = "⚠️" if LOG_USE_EMOJI else "[WARN]"
-EMOJI_INFO = "ℹ️" if LOG_USE_EMOJI else "[INFO]"
+EMOJI_TRADE = "💹" if LOG_EMOJI else "[TRADE]"
+EMOJI_WARN = "⚠️" if LOG_EMOJI else "[WARN]"
+EMOJI_INFO = "ℹ️" if LOG_EMOJI else "[INFO]"
 
 try:
     from config.config import LOG_PATH
@@ -27,7 +27,7 @@ def log_trade_full(
     trade_id=None, signal_date=None, buy_date=None, sell_date=None, ticker=None, quantity=None,
     buy_price=None, sell_price=None, trade_type=None, strategy=None, regime=None, result=None, pl=None,
     score=None, normalized_score=None, technicals=None, fundamentals=None, gpt_summary=None, gpt_decision=None,
-    news_url=None, reason=None, news_headlines=None, take_profit=None, stop_loss=None, extra=None
+    news_url=None, reason=None, news_headlines=None, news_api_used=None, take_profit=None, stop_loss=None, extra=None
 ):
     """
     Unified trade logger for all trade/skipped/rejection events.
@@ -56,6 +56,7 @@ def log_trade_full(
         "news_url": news_url,
         "reason": reason,
         "news_headlines": news_headlines,
+        "news_api_used": news_api_used,
         "take_profit": take_profit,
         "stop_loss": stop_loss,
         "logged_at": _timestamp()
@@ -92,3 +93,8 @@ def log_debug(msg):
         text = f"[DEBUG] {_timestamp()} {msg}"
         print(text)
         _log_to_file(text)
+
+def log_error(msg):
+    emoji = "❌" if LOG_EMOJI else "[ERROR]"
+    print(f"{emoji} {_timestamp()} {msg}")
+    _log_to_file(f"{emoji} {_timestamp()} {msg}")

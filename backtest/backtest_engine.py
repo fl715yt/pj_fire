@@ -18,7 +18,6 @@ from simulation.utils import load_trading_days, get_next_trading_day
 from simulation.simulation_engine import (
     simulate_trade_for_backtest,
     init_simulation_db,
-    get_cash,
     time_exit_logic
 )
 from simulation.logger import log_trade_full
@@ -77,6 +76,7 @@ def run_backtest_engine(
 
         n_win, n_loss, n_other = 0, 0, 0
         day_pl = 0
+        n_trades = 0
 
         for sig in ranked_signals:
             # Get next day open (entry) and calculate lot cost from that entry
@@ -150,6 +150,7 @@ def run_backtest_engine(
             })
 
             if trade_type == "BOUGHT":
+                n_trades += 1
                 # Actually execute trade (updates cash, etc.)
                 actual_result, actual_pl, actual_entry_date, actual_entry_price, actual_exit_date, actual_exit_price, actual_qty = simulate_trade_for_backtest(
                     conn, sig, date_str, TRADING_DAYS, return_result=True, execute_trade=True
@@ -166,7 +167,7 @@ def run_backtest_engine(
         last_cash = get_cash(conn)
         daily_stats.append({
             "date": date_str,
-            "n_trades": len(ranked_signals),
+            "n_trades": n_trades,
             "n_win": n_win, "n_loss": n_loss, "n_other": n_other,
             "day_pl": day_pl, "cash": last_cash
         })

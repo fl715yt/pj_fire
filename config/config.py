@@ -23,6 +23,9 @@ JQUANTS_EMAIL     = os.getenv("JQUANTS_EMAIL")
 JQUANTS_PASSWORD  = os.getenv("JQUANTS_PASSWORD")
 GOOGLE_API_KEY    = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID     = os.getenv("GOOGLE_CSE_ID")
+NEWSAPI_KEY       = os.getenv("NEWSAPI_KEY", "")
+GNEWS_API_KEY     = os.getenv("GNEWS_API_KEY", "")
+BRAVE_API_KEY     = os.getenv("BRAVE_API_KEY", "")
 
 # ----------------------------------------------------------------------
 #  Database locations (strict separation ⇒ no cross-contamination)
@@ -97,8 +100,7 @@ MAX_HOLDING_DAYS          = 3             # max days to hold a position
 # ----------------------------------------------------------------------
 #  Fundamentals import
 # ----------------------------------------------------------------------
-REQUIRED_FY_ONLY           = False           # fundamentals: full-year rows only
-ENABLE_QUARTERLY_IMPORT    = True          # flip True when /statements Q* rows are stored
+IMPORT_MODE = "FY"   # or "QUARTERLY"
 
 # ----------------------------------------------------------------------
 #  External endpoints (J-Quants Light Plan)
@@ -205,3 +207,66 @@ REGIMES = [
     "sector_down",
     "default",
 ]
+
+# ----------------------------------------------------------------------
+# News API / Fetcher Constants
+# ----------------------------------------------------------------------
+
+MAX_NEWS_RESULTS = 10
+
+DAILY_QUOTAS = {
+    "google_cse": 100,
+    "gnews": 100,
+    "newsapi": 100,
+    "brave_news": 67,  # 2000/month ÷ 30 ≈ 67/day, adjust as needed
+}
+
+ALLOWED_DOMAINS = [
+    "nikkei.com", "kabutan.jp", "bloomberg.co.jp", "reuters.com",
+    "irbank.net", "minkabu.jp", "moneyworld.jp", "fisco.jp"
+]
+JUNK_DOMAINS = [
+    "facebook.com", "twitter.com", "x.com", "instagram.com",
+    "wikipedia.org", "linkedin.com", "youtube.com", "ameblo.jp",
+    "note.com", "shop", "rakuten.co.jp", "amazon.co.jp"
+]
+JUNK_URL_PATTERNS = [
+    "/wiki/", "/mypage/", "/profile/", "/about/", "/support/", "/blog/", "/career/", "/job/", "/shop/", "/event/", "/guide/", "/faq", "/posts/", "/users/", "/account/", "/company/", "/news/all/", "/ir/", "/corp/"
+]
+SIGNAL_KEYWORDS = [
+    "下方修正", "上方修正", "買収", "合併", "子会社化", "不正", "訴訟", "監査", "粉飾",
+    "大幅減益", "黒字転換", "赤字転落", "新製品", "新サービス", "サービス開始",
+    "製品発表", "新規事業", "事業撤退", "生産停止", "販売停止", "リコール", "不祥事",
+    "人事異動", "退任", "新任", "大型契約", "受注", "資本提携", "株式交換", "TOB",
+    "公募増資", "第三者割当増資", "ストックオプション"
+]
+BONUS_KEYWORDS = [
+    "決算発表", "株主総会", "新規上場", "M&A", "業務提携", "IR発表", "開発成功",
+    "認可取得", "配当金", "新商品", "リニューアル", "役員報酬", "資本業務提携", "開示",
+    "役員変更", "市場変更", "公募増資", "資本提携", "IR", "株式分割"
+]
+JUNK_KEYWORDS = [
+    "ADRランキング", "ADR", "出来高ランキング", "売買高ランキング", "売買代金ランキング",
+    "PTS", "注目銘柄", "個別銘柄", "上昇銘柄", "動き", "出来高上位", "PBR", "PER", "時価総額",
+    "株価チャート", "理論株価", "目標株価", "掲示板", "株予報", "信用残", "時系列", "株価データ",
+    "レーティング", "トレンド", "株価", "株式", "チャート", "株価情報", "株式情報",
+    "日々株価", "週間株価", "年間株価", "四本値推移", "取引情報", "株式掲示板", "SBI証券",
+    "マネックス証券", "楽天証券", "証券会社", "株式ニュース", "銘柄情報", "会社情報",
+    "アセットアライブ", "株価・配当", "ピックアップ", "株価ヒストリー", "過去10年間",
+    "過去1か月", "株価指数", "指標", "モーニングスター", "ストップ高", "ストップ安",
+    "高値更新", "安値更新", "中途採用", "求人", "企業概要", "株価時系列", "転職",
+    "企業情報", "就職", "就活", "公式サイト",
+    "Stock Price & Latest News"
+]
+LOW_QUALITY_PATTERNS = [
+    "ランキング", "予想", "株主", "配当", "IRバンク", "MINKABU", "株探", "PR TIMES",
+    "チャート", "株価", "日々株価", "週間株価", "年間株価", "株価予想", "株価情報",
+    "株式情報", "株予報", "四本値推移", "配当情報", "会社概要", "証券コード", "株式指標", "優待",
+    "時系列", "株式分割", "過去10年間", "過去1か月", "個人投資家", "ピックアップ", "主要株主",
+    "株価データ", "株主総会", "銘柄情報", "ニュース一覧", "情報", "IR情報", "四季報"
+]
+
+# ----------------------------------------------------------------------
+#  Logging
+# ----------------------------------------------------------------------
+LOG_EMOJI = True   # Set to False to disable emoji in logs

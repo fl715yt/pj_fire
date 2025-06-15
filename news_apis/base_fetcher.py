@@ -3,17 +3,19 @@
 class BaseNewsFetcher:
     def fetch(self, ticker, date):
         """
+        Abstract method to fetch news headlines for the given ticker and date.
         Returns: List[dict] — each dict: {'headline': ..., 'date': ..., 'url': ..., 'source': ...}
         """
         raise NotImplementedError
 
     def get_remaining_quota(self):
-        """Returns integer for available queries today."""
+        """Returns the number of queries this fetcher can perform today."""
         raise NotImplementedError
 
     def log_query(self):
-        """Call in each fetch to increment internal quota counter."""
+        """Should increment internal quota counter when a query is made."""
         raise NotImplementedError
 
     def get_name(self):
+        """Returns the class/fetcher name (used for logging and tagging)."""
         return self.__class__.__name__

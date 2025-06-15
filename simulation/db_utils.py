@@ -92,16 +92,14 @@ def insert_prices(conn, df):
     conn.commit()
 
 def insert_fundamentals(conn, df):
-    """Insert a DataFrame of fundamentals (FY and/or quarterly) into the table."""
-    for _, row in df.iterrows():
-        try:
-            conn.execute("""
-                INSERT OR REPLACE INTO fundamentals 
-                    (ticker, period_type, period_end, revenue, eps, profit)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (row['ticker'], row['period_type'], row['period_end'], row['revenue'], row['eps'], row['profit']))
-        except Exception as e:
-            print(f"[WARN] Insert failed for {row['ticker']} {row['period_type']} {row['period_end']}: {e}")
+    df = df.drop_duplicates(subset=["ticker", "period_type", "period_end"])
+    records = df[["ticker", "period_type", "period_end", "revenue", "eps", "profit"]].to_dict(orient="records")
+    cur = conn.cursor()
+    cur.executemany("""
+        INSERT OR REPLACE INTO fundamentals 
+            (ticker, period_type, period_end, revenue, eps, profit)
+        VALUES (:ticker, :period_type, :period_end, :revenue, :eps, :profit)
+    """, records)
     conn.commit()
 
 def get_prices(conn, ticker, start_date=None, end_date=None):
