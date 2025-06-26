@@ -61,7 +61,7 @@ for date in tqdm(selected_dates, desc="Extracting features per date"):
     for c in candidates:
         ticker = c["ticker"]
         # News fetching and logging API source/result
-        fetchers = [GoogleCSEFetcher(), GNewsFetcher(), BraveNewsFetcher(), NewsAPIFetcher()]
+        fetchers = [GoogleCSEFetcher(), BraveNewsFetcher(), GNewsFetcher()]
         news_manager = NewsQuotaManager(fetchers)
         try:
             headlines, api_used = news_manager.fetch_news(ticker, date)

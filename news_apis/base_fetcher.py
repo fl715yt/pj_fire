@@ -8,14 +8,8 @@ class BaseNewsFetcher:
         """
         raise NotImplementedError
 
-    def get_remaining_quota(self):
-        """Returns the number of queries this fetcher can perform today."""
-        raise NotImplementedError
-
-    def log_query(self):
-        """Should increment internal quota counter when a query is made."""
-        raise NotImplementedError
-
     def get_name(self):
-        """Returns the class/fetcher name (used for logging and tagging)."""
+        """
+        Returns the class/fetcher name (used for logging and tagging).
+        """
         return self.__class__.__name__

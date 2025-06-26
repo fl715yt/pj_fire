@@ -25,11 +25,12 @@ from simulation.news_reason_gpt import categorize_reason_with_gpt
 from news_apis.google_cse_fetcher import GoogleCSEFetcher
 from news_apis.gnews_fetcher import GNewsFetcher
 from news_apis.brave_news_fetcher import BraveNewsFetcher
-from news_apis.newsapi_fetcher import NewsAPIFetcher
+# from news_apis.newsapi_fetcher import NewsAPIFetcher
 from simulation.logger import log_info
 
 # At the top of the module, once:
-fetchers = [GoogleCSEFetcher(), GNewsFetcher(), BraveNewsFetcher(), NewsAPIFetcher()]
+# fetchers = [GoogleCSEFetcher(), GNewsFetcher(), BraveNewsFetcher(), NewsAPIFetcher()]
+fetchers = [GoogleCSEFetcher(), BraveNewsFetcher(), GNewsFetcher()]
 news_manager = NewsQuotaManager(fetchers)
 
 def contains_exclusion_keyword(headlines):

@@ -8,32 +8,90 @@ import pandas as pd
 import urllib.request
 import urllib.parse
 import json
-from simulation.utils import get_ticker_to_variants
+import random
+import ssl
+import csv
+import os
+import pytz
 from config.config import (
     GNEWS_API_KEY,
     GPT_DELAY_SEC,
     DAILY_QUOTAS,
     VARIANT_CSV,
-    ALLOWED_DOMAINS,
+    # ALLOWED_DOMAINS,
+    NEWS_DOMAINS_WHITELIST,
     JUNK_DOMAINS,
     JUNK_URL_PATTERNS,
     SIGNAL_KEYWORDS,
     BONUS_KEYWORDS,
     JUNK_KEYWORDS,
     LOW_QUALITY_PATTERNS,
-    MAX_NEWS_RESULTS
+    MAX_NEWS_RESULTS,
 )
 
-MAX_RESULTS = 10
+QUOTA_CSV_PATH = "gnews_quota_log.csv"
+JST = pytz.timezone("Asia/Tokyo")
+RESET_HOUR = 9  # 9AM Tokyo time
 
 class GNewsFetcher(BaseNewsFetcher):
     def __init__(self):
         self.api_key = GNEWS_API_KEY
         self.quota_per_day = DAILY_QUOTAS.get("gnews", 100)
-        self.queries_today = 0
-        # Load variants table ONCE per instance
         self.variant_df = pd.read_csv(VARIANT_CSV, dtype=str)
-        self.TICKER_TO_VARIANTS = get_ticker_to_variants()
+        self.variant_df['ticker'] = self.variant_df['ticker'].str.strip()
+        self.variant_df['ticker'] = self.variant_df['ticker'].apply(
+            lambda x: x[:-1] if len(x) > 4 and x.endswith('0') else x
+        )
+        self.ticker_row_map = {str(row["ticker"]): row for _, row in self.variant_df.iterrows()}
+        # Make sure quota file exists
+        if not os.path.isfile(QUOTA_CSV_PATH):
+            with open(QUOTA_CSV_PATH, "w", encoding="utf-8", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["date_str", "queries_used"])
+
+    def _get_jst_now(self):
+        import pytz
+        return datetime.now(JST)
+
+    def _get_reset_window(self):
+        now = self._get_jst_now()
+        reset_today = now.replace(hour=RESET_HOUR, minute=0, second=0, microsecond=0)
+        if now < reset_today:
+            reset_date = (reset_today - timedelta(days=1)).date()
+        else:
+            reset_date = reset_today.date()
+        return reset_date.strftime("%Y-%m-%d")
+
+    def _read_quota(self):
+        window = self._get_reset_window()
+        if not os.path.isfile(QUOTA_CSV_PATH):
+            return 0
+        with open(QUOTA_CSV_PATH, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row["date_str"] == window:
+                    return int(row["queries_used"])
+        return 0
+
+    def _write_quota(self, used):
+        window = self._get_reset_window()
+        rows = []
+        found = False
+        if os.path.isfile(QUOTA_CSV_PATH):
+            with open(QUOTA_CSV_PATH, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if row["date_str"] == window:
+                        rows.append({"date_str": window, "queries_used": str(used)})
+                        found = True
+                    else:
+                        rows.append(row)
+        if not found:
+            rows.append({"date_str": window, "queries_used": str(used)})
+        with open(QUOTA_CSV_PATH, "w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["date_str", "queries_used"])
+            writer.writeheader()
+            writer.writerows(rows)
 
     def strip_trailing_zero(self, code):
         code = str(code)
@@ -44,14 +102,50 @@ class GNewsFetcher(BaseNewsFetcher):
     def halfwidth_to_fullwidth(self, s):
         return ''.join(chr(ord(c) + 0xFEE0) if c.isdigit() else c for c in str(s))
 
-    def get_search_terms(self, ticker, variants):
-        ticker = self.strip_trailing_zero(ticker)
-        ticker_fw = self.halfwidth_to_fullwidth(ticker)
-        terms = [ticker, ticker_fw] + [v for v in variants if v not in {ticker, ticker_fw}]
-        return list(dict.fromkeys([t for t in terms if t and len(t) > 1]))
+    def build_company_product_queries(self, ticker):
+        row = self.ticker_row_map.get(str(ticker))
+        if row is None:
+            print(f"[WARN] No variants row for ticker {ticker}")
+            return []
+
+        company_names = set()
+        if pd.notna(row.get("company_name")):
+            company_names.add(row["company_name"].strip())
+        if pd.notna(row.get("company_name_variants")):
+            company_names.update([v.strip() for v in str(row["company_name_variants"]).split("|") if v.strip()])
+
+        product_names = set()
+        if pd.notna(row.get("product_names")):
+            product_names.update([v.strip() for v in str(row["product_names"]).split("|") if v.strip()])
+
+        company_names = {n for n in company_names if n}
+        product_names = {n for n in product_names if n}
+
+        def make_block(names):
+            if not names:
+                return None
+            if len(names) > 1:
+                return "(" + " OR ".join([f'"{n}"' for n in names]) + ")"
+            else:
+                return f'"{list(names)[0]}"'
+
+        company_block = make_block(company_names)
+        product_block = make_block(product_names)
+
+        queries = []
+        if company_block and product_block:
+            queries.append(f'{company_block} AND {product_block}')
+        if company_block:
+            queries.append(f'{company_block}')
+        if product_block and not company_block:
+            queries.append(f'{product_block}')
+        if not queries:
+            queries.append(f'"{ticker}.T" OR "{self.halfwidth_to_fullwidth(ticker)}.T"')
+        return queries
 
     def is_allowed_domain(self, url):
-        return any(dom in url for dom in ALLOWED_DOMAINS)
+        # return any(dom in url for dom in ALLOWED_DOMAINS)
+        return any(dom in url for dom in NEWS_DOMAINS_WHITELIST)
 
     def is_junk_domain(self, url):
         return any(dom in url for dom in JUNK_DOMAINS)
@@ -73,19 +167,15 @@ class GNewsFetcher(BaseNewsFetcher):
             return True
         return False
 
-    def mentions_wrong_company(self, text, search_terms):
-        return not any(v in text for v in search_terms)
-
-    def score_headline(self, text, url, search_terms):
+    def score_headline(self, text, url, search_terms=None):
         score = 0
         if any(term in text for term in SIGNAL_KEYWORDS):
             score += 5
         if any(term in text for term in BONUS_KEYWORDS):
             score += 3
-        if any(domain in url for domain in ALLOWED_DOMAINS):
+        # if any(domain in url for domain in ALLOWED_DOMAINS):
+        if any(domain in url for domain in NEWS_DOMAINS_WHITELIST):
             score += 2
-        if any(v in text for v in search_terms):
-            score += 1
         if any(term in text for term in JUNK_KEYWORDS):
             score -= 3
         if self.is_junk_domain(url) or self.is_junk_url(url) or self.is_junk_headline(text):
@@ -96,22 +186,23 @@ class GNewsFetcher(BaseNewsFetcher):
 
     def fetch(self, ticker, signal_date):
         if self.get_remaining_quota() <= 0:
+            print(f"[GNewsFetcher] Daily quota exhausted.")
             return []
 
         ticker = self.strip_trailing_zero(ticker)
-        variants = self.TICKER_TO_VARIANTS.get(str(ticker), [])
-        search_terms = self.get_search_terms(ticker, variants)
-        if not search_terms:
+        queries = self.build_company_product_queries(ticker)
+        if not queries:
             print(f"[WARN] No search terms for ticker {ticker}.")
             return []
 
         base_date = datetime.strptime(signal_date, "%Y-%m-%d")
         headlines = []
+        queries_run = 0
 
         for offset in range(-3, 2):  # -3 to +1 inclusive
             q_date = (base_date + timedelta(days=offset)).strftime("%Y-%m-%d")
-            for term in search_terms:
-                query = term
+            for query in queries:
+                print(f"[GNewsFetcher] Boolean Query: '{query}' for ticker {ticker} ({q_date})")
                 params = {
                     "q": query,
                     "lang": "ja",
@@ -126,46 +217,57 @@ class GNewsFetcher(BaseNewsFetcher):
                         data = json.loads(response.read().decode("utf-8"))
                         articles = data.get("articles", [])
                         self.log_query()
+                except KeyboardInterrupt:
+                    print("[ERROR] Manual interrupt. Exiting fetch early.")
+                    return []
+                except ssl.SSLError as ssl_err:
+                    print(f"[ERROR] SSL Error: {ssl_err}")
+                    continue
                 except Exception as e:
-                    print(f"\u26a0\ufe0f GNews failed for {ticker} ({term}) on {q_date}: {e}")
+                    print(f"\u26a0\ufe0f GNews failed for {ticker} ({query}) on {q_date}: {e}")
                     self.log_query()
                     continue
 
                 for article in articles:
                     title = article.get("title", "")
                     link = article.get("url", "")
+                    if not self.is_allowed_domain(link):
+                        continue
                     if self.is_junk_domain(link) or self.is_junk_url(link) or self.is_junk_headline(title):
                         continue
-                    if self.mentions_wrong_company(title, search_terms):
-                        continue
-                    score = self.score_headline(title, link, search_terms)
-                    if score > 0 or self.is_allowed_domain(link):
+                    score = self.score_headline(title, link)
+                    if score > 0:
                         headlines.append((score, {
                             "headline": title,
                             "date": q_date,
                             "url": link,
                             "source": "GNews"
                         }))
-                time.sleep(GPT_DELAY_SEC)
+                # Add randomized delay to reduce ban risk
+                time.sleep(GPT_DELAY_SEC + random.uniform(0.3, 1.2))
+                queries_run += 1
 
         # Deduplicate by headline text
         seen_titles = set()
         cleaned = []
-        for s, line in sorted(headlines, reverse=True):
+        for s, line in sorted(headlines, key=lambda x: x[0], reverse=True):
             title = line["headline"]
             if title not in seen_titles:
                 cleaned.append(line)
                 seen_titles.add(title)
-
-        top_n = cleaned[:3]
+        if not cleaned:
+            print(f"[WARN] No headlines for ticker {ticker} after domain filtering.")
+        
+        top_n = cleaned[:MAX_NEWS_RESULTS]
         return top_n
 
     def get_remaining_quota(self):
-        return self.quota_per_day - self.queries_today
+        used = self._read_quota()
+        return self.quota_per_day - used
 
     def log_query(self):
-        self.queries_today += 1
+        used = self._read_quota()
+        self._write_quota(used + 1)
 
     def get_name(self):
         return "GNews"
-

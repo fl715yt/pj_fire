@@ -10,7 +10,8 @@ from config.config import (
     JQUANTS_EMAIL,
     JQUANTS_PASSWORD,
     JQ_BASE_URL,
-    VARIANT_CSV
+    VARIANT_CSV,
+    MAX_VARIANTS_PER_TICKER_GOOGLE
 )
 
 load_dotenv()  # Ensure env vars loaded
@@ -71,12 +72,27 @@ def get_next_trading_day(current_date, trading_days, offset=1):
         return None
 
 def get_ticker_to_variants():
-    variant_df = pd.read_csv(VARIANT_CSV, dtype=str)
-    variant_df["ticker"] = variant_df["ticker"].apply(lambda code: code[:-1] if len(code) == 5 and code.endswith("0") else code)
-    return {
-        row["ticker"]: [v.strip() for v in str(row["variants"]).split(" / ") if v.strip() and not v.strip().isdigit()]
-        for _, row in variant_df.iterrows()
-    }
+    import pandas as pd
+    df = pd.read_csv(VARIANT_CSV, dtype=str)
+    result = {}
+    for _, row in df.iterrows():
+        ticker = row["ticker"]
+        # Strip trailing zero
+        ticker_stripped = ticker[:-1] if len(ticker) == 5 and ticker.endswith("0") else ticker
+        # Try to get main company name, fallback to ticker
+        main_name = row.get("company_name", "") if "company_name" in row else ""
+        # Parse variants column (split, filter, etc)
+        variants = [v.strip() for v in str(row.get("variants", "")).split(" / ") if v.strip()]
+        # Build list with always ticker + main name + first few variants (deduped, order-preserved)
+        all_terms = [ticker_stripped]
+        if main_name and main_name not in all_terms:
+            all_terms.append(main_name)
+        for v in variants:
+            if v not in all_terms:
+                all_terms.append(v)
+        # Cap at MAX_VARIANTS_PER_TICKER_GOOGLE
+        result[ticker_stripped] = all_terms[:MAX_VARIANTS_PER_TICKER_GOOGLE]
+    return result
 
 if __name__ == "__main__":
     id_token = get_id_token()

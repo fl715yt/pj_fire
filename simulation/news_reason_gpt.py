@@ -7,7 +7,7 @@ All category mappings, scoring, and GPT config are centralized via config/config
 import os
 import openai
 import time
-from dotenv import load_dotenv
+from simulation.logger import log_warning, log_error
 from config.config import (
     OPENAI_API_KEY,
     GPT_MODEL,
@@ -16,19 +16,34 @@ from config.config import (
     CATEGORY_SCORING,
 )
 
-load_dotenv()
 
-def categorize_reason_with_gpt(ticker, date, price_drop_pct, headlines):
-    """
-    Use GPT to categorize the reason for a stock drop.
-    Returns: category string (see REASONING_CATEGORY_LABELS)
-    """
+def categorize_reason_with_gpt(
+        ticker: str,
+        date: str,
+        price_drop_pct: float,
+        headlines: list[dict] | str | None
+    ) -> str:
+        """
+        Uses GPT to categorize the reason for a stock price drop.
+        Args:
+            ticker: Stock ticker as string.
+            date: Date as YYYY-MM-DD string.
+            price_drop_pct: Percentage drop as float (-0.05 = -5%).
+            headlines: List of dicts with 'headline' key, or string, or None.
+        Returns:
+            One of REASONING_CATEGORY_LABELS (see config).
+        """
+
     openai.api_key = OPENAI_API_KEY
-
+    
     if isinstance(headlines, str):
         headlines_text = headlines
     elif isinstance(headlines, list):
-        headlines_text = "\n".join([f"- {h}" for h in headlines]) if headlines else "No news found."
+        # If the list is a list of dicts (as per fetchers), extract headline text
+        if headlines and isinstance(headlines[0], dict):
+            headlines_text = "\n".join([f"- {h['headline']}" for h in headlines if 'headline' in h]) or "No news found."
+        else:
+            headlines_text = "\n".join([f"- {h}" for h in headlines]) or "No news found."
     else:
         headlines_text = "No news found."
 
@@ -64,7 +79,7 @@ def categorize_reason_with_gpt(ticker, date, price_drop_pct, headlines):
             return "no_news"
         return category
     except Exception as e:
-        print(f"[ERROR] GPT categorization failed for {ticker} on {date}: {e}")
+        log_error(f"GPT categorization failed for {ticker} on {date}: {e}")
         return "no_news"
 
 # Example usage:

@@ -110,7 +110,7 @@ class NewsAPIFetcher(BaseNewsFetcher):
                 try:
                     articles = self.client.get_everything(
                         q=term,
-                        language="ja",  # Japanese only
+                        country="jp",  # Japanese only
                         from_param=q_date,
                         to=q_date,
                         sort_by="popularity",
@@ -142,7 +142,7 @@ class NewsAPIFetcher(BaseNewsFetcher):
         # Deduplicate by headline text
         seen_titles = set()
         cleaned = []
-        for s, line in sorted(headlines, reverse=True):
+        for s, line in sorted(headlines, key=lambda x: x[0], reverse=True):
             title = line["headline"]
             if title not in seen_titles:
                 cleaned.append(line)
@@ -159,4 +159,3 @@ class NewsAPIFetcher(BaseNewsFetcher):
 
     def get_name(self):
         return "NewsAPI"
-
