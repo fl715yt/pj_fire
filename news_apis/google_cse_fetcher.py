@@ -109,12 +109,11 @@ class GoogleCSEFetcher(BaseNewsFetcher):
     def halfwidth_to_fullwidth(self, s):
         return ''.join(chr(ord(c) + 0xFEE0) if c.isdigit() else c for c in str(s))
 
-    def build_company_product_queries(self, ticker):
+    def build_queries(self, ticker, append_news_suffix=True):
         row = self.ticker_row_map.get(str(ticker))
         if row is None:
             print(f"[WARN] No variants row for ticker {ticker}")
             return []
-
         company_names = set()
         if pd.notna(row.get("company_name")):
             n = row["company_name"].strip()
@@ -125,42 +124,24 @@ class GoogleCSEFetcher(BaseNewsFetcher):
                 v = v.strip()
                 if v and not v.isnumeric():
                     company_names.add(v)
-
         product_names = set()
         if pd.notna(row.get("product_names")):
             for v in str(row["product_names"]).split("|"):
                 v = v.strip()
                 if v and not v.isnumeric():
                     product_names.add(v)
-
-        company_names = {n for n in company_names if n}
-        product_names = {n for n in product_names if n}
-
-        def make_block(names):
-            if not names:
-                return None
-            if len(names) > 1:
-                return "(" + " OR ".join([f'"{n}"' for n in names]) + ")"
-            else:
-                return f'"{list(names)[0]}"'
-
-        company_block = make_block(company_names)
-        product_block = make_block(product_names)
-
+        # 1. Company names query (always included)
         queries = []
-        if company_block and product_block:
-            queries.append(f"{company_block} AND {product_block}")
-        if company_block:
-            queries.append(f"{company_block}")
-        if product_block and not company_block:
-            queries.append(f"{product_block}")
-        if not queries:
-            print(f"[WARN] No company or product names for ticker {ticker}, using ticker fallback.")
-            queries.append(f'"{ticker}" OR "{self.halfwidth_to_fullwidth(ticker)}"')
-
-        if GOOGLE_CSE_USE_NEWS_SUFFIX:
+        if company_names:
+            queries.append(" OR ".join([f'"{n}"' for n in company_names]))
+        # 2. Product names query (only if product names exist)
+        if product_names:
+            queries.append(" OR ".join([f'"{n}"' for n in product_names]))
+        # 3. Append ニュース if desired
+        if append_news_suffix:
             queries = [q + " ニュース" for q in queries]
         return queries
+
 
     def is_allowed_domain(self, url):
         # return any(dom in url for dom in ALLOWED_DOMAINS)
@@ -173,10 +154,7 @@ class GoogleCSEFetcher(BaseNewsFetcher):
         return any(pat in url for pat in JUNK_URL_PATTERNS)
 
     def is_junk_headline(self, text):
-        generic = ["公式サイト", "マイページ", "会社概要", "プロフィール", "お問い合わせ", "サポート", "コーポレート", "求人", "採用情報"]
-        if any(word in text for word in generic):
-            return True
-        if "掲示板" in text or "ADRランキング" in text:
+        if any(word in text for word in JUNK_KEYWORDS):
             return True
         if re.fullmatch(r"[A-Za-z0-9\-_/ ]+", text):
             return True
@@ -208,7 +186,7 @@ class GoogleCSEFetcher(BaseNewsFetcher):
             return []
 
         ticker = self.strip_trailing_zero(ticker)
-        queries = self.build_company_product_queries(ticker)
+        queries = self.build_queries(ticker, append_news_suffix=True)
         if not queries:
             print(f"[WARN] No search terms for ticker {ticker}.")
             return []
@@ -250,10 +228,13 @@ class GoogleCSEFetcher(BaseNewsFetcher):
                 for item in items:
                     title = item.get("title", "")
                     link = item.get("link", "")
-                    if self.is_junk_domain(link) or self.is_junk_url(link) or self.is_junk_headline(title):
-                        continue
+                    domain = link.split("/")[2] if "://" in link else link
+                    print(f"  [DEBUG] Fetched domain: {domain} | {title}")
+
                     # Only allow whitelisted news domains
                     if not self.is_allowed_domain(link):
+                        continue
+                    if self.is_junk_domain(link) or self.is_junk_url(link) or self.is_junk_headline(title):
                         continue
                     score = self.score_headline(title, link)
                     if score > 0:

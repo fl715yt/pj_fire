@@ -231,6 +231,8 @@ class GNewsFetcher(BaseNewsFetcher):
                 for article in articles:
                     title = article.get("title", "")
                     link = article.get("url", "")
+                    domain = link.split("/")[2] if "://" in link else link
+                    print(f"  [DEBUG] Fetched domain: {domain} | {title}")
                     if not self.is_allowed_domain(link):
                         continue
                     if self.is_junk_domain(link) or self.is_junk_url(link) or self.is_junk_headline(title):
