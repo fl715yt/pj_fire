@@ -34,7 +34,7 @@ import joblib
 # Allowed reason categories for mean reversion
 ALLOWED_REASON_CATEGORIES = {"no_news", "misinterpreted_news"}
 
-def generate_signals(conn, date, regime_override=None, model=None):
+def generate_mean_reversion_signals(conn, date, regime_override=None, model=None):
     """
     Runs mean reversion screening, GPT reasoning, ML scoring, and ranking for the given date.
     Returns ranked candidate signals ready for execution.
@@ -101,6 +101,6 @@ def generate_signals(conn, date, regime_override=None, model=None):
 if __name__ == "__main__":
     import sqlite3
     conn = sqlite3.connect("backtest/backtest_bt.db")
-    signals = generate_signals(conn, "2024-03-15")
+    signals = generate_mean_reversion_signals(conn, "2024-03-15")
     for s in signals:
         print(s)

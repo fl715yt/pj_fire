@@ -13,6 +13,7 @@ from simulation.db_utils import get_prices, get_fundamentals, get_quarterly_fund
 from strategies.common.fundamental_features import extract_fy_features, extract_ttm_features, is_broken_fundamental
 from simulation.logger import log_info
 from simulation.regime import calc_market_regime, calc_sector_regime  # <--- new
+from tools.tdnet_fetcher import get_disclosures_for_ticker
 
 from config.config import (
     UNIVERSE_CSV,
@@ -142,6 +143,23 @@ def screen_stocks(
             fail_counts["regime_blocked"].append(ticker)
             continue
 
+        # --- Post-Earnings Suppression via TDnet ---
+        tdnet_hits = get_disclosures_for_ticker(str(ticker), date, days=2)
+        if any("決算" in d["title"] for d in tdnet_hits):
+            fail_counts.setdefault("recent_earnings", []).append(ticker)
+            continue
+
+        # --- Pre-Trend (5-day) and Volume Anomaly ---
+        pre_trend_pct = None
+        if idx >= 5:
+            try:
+                pre_trend_pct = (row["close"] - df.iloc[idx-5]["close"]) / df.iloc[idx-5]["close"] * 100
+            except Exception:
+                pre_trend_pct = None
+
+        avg_vol_5d = df.iloc[max(idx-4, 0):idx+1]["volume"].mean()
+        volume_spike_ratio = vol / avg_vol_5d if avg_vol_5d else 0
+
         candidate = {
             "ticker": ticker,
             sector_col: sector_val,
@@ -153,6 +171,8 @@ def screen_stocks(
             "ma25": row["ma25"],
             "volume": vol,
             "volume_spike": volume_spike,
+            "pre_trend_pct": pre_trend_pct,
+            "volume_spike_ratio": volume_spike_ratio,
             "strategy": strategy,
             "market_regime": market_regime,
             "sector_regime": sector_regime,
@@ -163,7 +183,14 @@ def screen_stocks(
                 "sector": sector_val,
                 "sector_mean_return": float(sector_df["close"].pct_change(20).iloc[-1]) if 'sector_df' in locals() and not sector_df.empty else 0.0,
                 "sector_volatility": float(sector_df["close"].pct_change().rolling(20).std().iloc[-1]) if 'sector_df' in locals() and not sector_df.empty else 0.0,
-            }
+            },
+            # Candlestick pattern flags
+            "is_hammer": bool(row.get("is_hammer", False)),
+            "is_bullish_engulfing": bool(row.get("is_bullish_engulfing", False)),
+            "is_morning_star": bool(row.get("is_morning_star", False)),
+            "is_shooting_star": bool(row.get("is_shooting_star", False)),
+            "is_bearish_engulfing": bool(row.get("is_bearish_engulfing", False)),
+            "is_evening_star": bool(row.get("is_evening_star", False)),
         }
         candidates.append(candidate)
 

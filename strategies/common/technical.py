@@ -61,19 +61,104 @@ def calc_atr(df, window=14):
 def calc_short_term_volatility(prices, window=5):
     return prices.pct_change().rolling(window).std()
 
-def detect_candlestick_reversal(df):
-    """
-    Simple example: returns Series with 1 if bullish engulfing pattern, -1 if bearish, 0 otherwise.
-    """
+def detect_hammer(df):
+    """Hammer: small real body near top, long lower wick, small/no upper wick."""
     open_ = df['open']
     close = df['close']
-    prev_open = open_.shift(1)
-    prev_close = close.shift(1)
-    # Bullish engulfing: yesterday red, today green, today body engulfs yesterday
-    bullish = ((prev_close < prev_open) & (close > open_) & (close > prev_open) & (open_ < prev_close))
-    # Bearish engulfing: yesterday green, today red, today body engulfs yesterday
-    bearish = ((prev_close > prev_open) & (close < open_) & (open_ > prev_close) & (close < prev_open))
-    return bullish.astype(int) - bearish.astype(int)
+    high = df['high']
+    low = df['low']
+    body = (close - open_).abs()
+    candle_len = high - low
+    lower_shadow = (open_ - low).where(open_ < close, close - low)
+    upper_shadow = high - open_.where(open_ > close, close)
+    cond = (
+        (body / candle_len <= 0.3) &
+        (lower_shadow >= body * 2) &
+        (upper_shadow <= body * 0.5)
+    )
+    return cond.fillna(False)
+
+def detect_bullish_engulfing(df):
+    """Bullish Engulfing: prev day red, today green, today body engulfs prev body."""
+    prev_open = df['open'].shift(1)
+    prev_close = df['close'].shift(1)
+    open_ = df['open']
+    close = df['close']
+    cond = (
+        (prev_close < prev_open) & (close > open_) &
+        (close > prev_open) & (open_ < prev_close)
+    )
+    return cond.fillna(False)
+
+def detect_morning_star(df):
+    """Morning Star: 3-candle pattern: red, small gap down, green closes above Day1 midpoint."""
+    open_ = df['open']
+    close = df['close']
+    prev_open = df['open'].shift(1)
+    prev_close = df['close'].shift(1)
+    prev2_open = df['open'].shift(2)
+    prev2_close = df['close'].shift(2)
+    # Day 1: big red, Day 2: small real body, Day 3: green, closes above Day1 midpoint
+    day1_body = (prev2_close - prev2_open).abs()
+    day2_body = (prev_close - prev_open).abs()
+    day3_body = (close - open_).abs()
+    day1_mid = (prev2_close + prev2_open) / 2
+    cond = (
+        (prev2_close < prev2_open) &  # Day1 red
+        (day2_body < day1_body * 0.5) &  # Day2 small
+        (close > open_) &  # Day3 green
+        (close > day1_mid)
+    )
+    return cond.fillna(False)
+
+def detect_shooting_star(df):
+    """Shooting Star: small real body near bottom, long upper wick, small/no lower wick."""
+    open_ = df['open']
+    close = df['close']
+    high = df['high']
+    low = df['low']
+    body = (close - open_).abs()
+    candle_len = high - low
+    upper_shadow = high - open_.where(open_ > close, close)
+    lower_shadow = (open_ - low).where(open_ < close, close - low)
+    cond = (
+        (body / candle_len <= 0.3) &
+        (upper_shadow >= body * 2) &
+        (lower_shadow <= body * 0.5)
+    )
+    return cond.fillna(False)
+
+def detect_bearish_engulfing(df):
+    """Bearish Engulfing: prev day green, today red, today body engulfs prev body."""
+    prev_open = df['open'].shift(1)
+    prev_close = df['close'].shift(1)
+    open_ = df['open']
+    close = df['close']
+    cond = (
+        (prev_close > prev_open) & (close < open_) &
+        (open_ > prev_close) & (close < prev_open)
+    )
+    return cond.fillna(False)
+
+def detect_evening_star(df):
+    """Evening Star: 3-candle pattern: green, small gap up, red closes below Day1 midpoint."""
+    open_ = df['open']
+    close = df['close']
+    prev_open = df['open'].shift(1)
+    prev_close = df['close'].shift(1)
+    prev2_open = df['open'].shift(2)
+    prev2_close = df['close'].shift(2)
+    day1_body = (prev2_close - prev2_open).abs()
+    day2_body = (prev_close - prev_open).abs()
+    day3_body = (close - open_).abs()
+    day1_mid = (prev2_close + prev2_open) / 2
+    cond = (
+        (prev2_close > prev2_open) &  # Day1 green
+        (day2_body < day1_body * 0.5) &  # Day2 small
+        (close < open_) &  # Day3 red
+        (close < day1_mid)
+    )
+    return cond.fillna(False)
 
 def add_indicators(df):
     # Core indicators
@@ -101,8 +186,14 @@ def add_indicators(df):
     # NEW: Short-term volatility
     df["volatility5"] = calc_short_term_volatility(df["close"], window=5)
 
-    # NEW: Candlestick reversal
-    df["candlestick_reversal"] = detect_candlestick_reversal(df)
+    # Candlestick pattern detection
+    df["is_hammer"] = detect_hammer(df)
+    df["is_bullish_engulfing"] = detect_bullish_engulfing(df)
+    df["is_morning_star"] = detect_morning_star(df)
+    df["is_shooting_star"] = detect_shooting_star(df)
+    df["is_bearish_engulfing"] = detect_bearish_engulfing(df)
+    df["is_evening_star"] = detect_evening_star(df)
+    return df
 
     return df
 

@@ -15,7 +15,7 @@ from config.config import (
 
 def score_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Scores a single candidate based on config-driven weights.
+    Scores a single candidate based on config-driven weights + scoring modifiers.
     Returns a new dict with score and normalized_score fields added.
     Never mutates the original input dict.
     """
@@ -35,10 +35,63 @@ def score_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
         WEIGHTS.get("volume_spike", 0.0) * volume_spike
     )
 
-    # Optional: add more features as needed
+    # --- Candlestick pattern scoring (v1 logic, simple additive) ---
+    bullish_patterns = ["is_hammer", "is_bullish_engulfing", "is_morning_star"]
+    bearish_patterns = ["is_shooting_star", "is_bearish_engulfing", "is_evening_star"]
+
+    pattern_score = 0
+    for p in bullish_patterns:
+        if c.get(p, False):
+            pattern_score += 1
+    for p in bearish_patterns:
+        if c.get(p, False):
+            pattern_score -= 1
+    c["candlestick_score"] = pattern_score  # log for reference
+    score += pattern_score  # incorporate into final score
+
+    # === Score Modifiers: MA(5) Distance, Pre-trend, Volume Anomaly ===
+
+    modifiers = {}
+
+    # 1. MA(5) distance (%)
+    ma5 = c.get("ma5")
+    close = c.get("price")
+    ma5_distance_pct = None
+    if ma5 is not None and close:
+        ma5_distance_pct = (ma5 - close) / close * 100
+        c["ma5_distance_pct"] = ma5_distance_pct
+        if 2.0 <= ma5_distance_pct <= 8.0:
+            score += 7
+            modifiers["ma5_distance"] = 7
+        elif ma5_distance_pct < 1.0:
+            modifiers["ma5_distance"] = 0
+        elif ma5_distance_pct > 10.0:
+            score -= 2
+            modifiers["ma5_distance"] = -2
+
+    # 2. Pre-drop 5-day trend (%)
+    pre_trend_pct = c.get("pre_trend_pct")  # Should be computed in screening
+    if pre_trend_pct is not None:
+        if pre_trend_pct > 1.0:
+            score += 4
+            modifiers["pre_trend"] = 4
+        else:
+            modifiers["pre_trend"] = 0
+    c["pre_trend_pct"] = pre_trend_pct
+
+    # 3. Volume anomaly (spike ratio)
+    volume_spike_ratio = c.get("volume_spike_ratio")  # Should be computed in screening
+    if volume_spike_ratio is not None:
+        if volume_spike_ratio > 2.0:
+            score += 3
+            modifiers["volume_anomaly"] = 3
+        else:
+            modifiers["volume_anomaly"] = 0
+    c["volume_spike_ratio"] = volume_spike_ratio
+
+    c["score_modifiers"] = modifiers
 
     c["score"] = score
-    # Simple normalization: scale out of 100 (max possible, or leave as-is if no upper bound)
     c["normalized_score"] = round(min(score * 20, 100), 1)  # Example: rescale, cap at 100
 
     return c

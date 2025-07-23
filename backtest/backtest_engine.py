@@ -9,6 +9,9 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import json
 
+from simulation.regime import detect_regime, regime_strategy_map
+from strategies.common.strategy_map import STRATEGY_FUNCTIONS  # You’ll need to create/update this
+
 from config.config import BT_DB_FILE, START_CASH, START_DATE, END_DATE, DEFAULT_LOT_SIZE, STOP_LOSS_PCT
 from simulation.db_utils import get_conn, get_cash, get_prices
 from strategies.common.screening import screen_stocks 
@@ -46,23 +49,47 @@ def run_backtest_engine(
         print(f"\n=== {date_str} ===")
         activity = False  # Track if anything happens this day
 
-        candidates = screen_stocks(conn, date_str)
-        if not candidates:
-            print("No candidates for this day.")
-            daily_stats.append({"date": date_str, "n_trades": 0, "n_win": 0, "n_loss": 0, "n_other": 0, "day_pl": 0, "cash": last_cash})
-            equity_curve.append({"date": date_str, "equity": last_cash})
-            continue
+        # Get price DataFrame for regime detection (choose your index ETF or main universe)
+        price_df = get_prices(conn, "TOPIX", end_date=date_str)  # Or your preferred market index
+        vix_j = None  # Add your logic if you want to pass VIX-J
 
-        candidates_with_reasons = attach_reason_to_candidates(conn, candidates)
-        if not candidates_with_reasons:
-            print("No candidates passed reasoning filter.")
-            daily_stats.append({"date": date_str, "n_trades": 0, "n_win": 0, "n_loss": 0, "n_other": 0, "day_pl": 0, "cash": last_cash})
-            equity_curve.append({"date": date_str, "equity": last_cash})
-            continue
+        regime = detect_regime(price_df, vix_j)
+        allowed_strategies = regime_strategy_map.get(regime, [])
 
-        top_signals = get_top_signals_for_day(candidates_with_reasons)
-        if not top_signals:
-            print("No signals above threshold.")
+        all_signals = []
+        for strat in allowed_strategies:
+            func = STRATEGY_FUNCTIONS.get(strat)
+            if func:
+                if strat == "mean_reversion":
+                    candidates = screen_stocks(conn, date_str)
+                    if not candidates:
+                        continue
+                    candidates_with_reasons = attach_reason_to_candidates(conn, candidates)
+                    if not candidates_with_reasons:
+                        continue
+                    top_signals = get_top_signals_for_day(candidates_with_reasons)
+                    if not top_signals:
+                        continue
+                    # Attach regime/strategy to each signal
+                    for sig in top_signals:
+                        sig["regime"] = regime
+                        sig["strategy"] = strat
+                    all_signals.extend(top_signals)
+                # Add similar logic for other strategies here
+                elif strat == "momentum":
+                    # You need to implement this block for your momentum strategy
+                    pass
+                elif strat == "defensive":
+                    # For defensive, either implement or continue
+                    pass
+                elif strat == "block_all":
+                    # Block all = skip trading for this day
+                    print(f"[BLOCKED] Regime {regime}: No trading allowed.")
+                    all_signals = []
+                    break  # Skip trading and signal loop for this day
+
+        if not all_signals:
+            print("No signals above threshold or regime blocked.")
             daily_stats.append({"date": date_str, "n_trades": 0, "n_win": 0, "n_loss": 0, "n_other": 0, "day_pl": 0, "cash": last_cash})
             equity_curve.append({"date": date_str, "equity": last_cash})
             continue

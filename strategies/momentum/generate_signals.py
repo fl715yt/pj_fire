@@ -31,7 +31,7 @@ MOMENTUM_LOOKBACK_DAYS = 5
 MOMENTUM_MIN_RETURN = 0.03  # +3% over last 5 days
 VOLUME_SPIKE_THRESHOLD = 1.5  # 1.5x avg volume
 
-def generate_signals(conn, date, regime_override=None, model=None):
+def generate_momentum_signals(conn, date, regime_override=None, model=None):
     """
     Runs momentum screening, ML scoring, and ranking for the given date.
     Returns ranked candidate signals ready for execution.
@@ -51,6 +51,7 @@ def generate_signals(conn, date, regime_override=None, model=None):
 
     # 2. Regime-aware gating (global for strategy)
     market_regime = candidates[0]["market_regime"] if candidates else "unknown"
+    regime = regime_override or market_regime
     if is_regime_blocked("momentum", market_regime):
         print(f"[Momentum] Blocking signals due to regime={market_regime}.")
         return []
@@ -84,11 +85,16 @@ def generate_signals(conn, date, regime_override=None, model=None):
             print(f"[Momentum] No candidates passed ML score filter on {date}.")
             return []
 
-    # 6. Final ranking
+    # 6. Attach regime and strategy fields to all signal dicts
+    final_regime = regime_override or (filtered_candidates[0]["regime"] if filtered_candidates else "unknown")
+    for c in filtered_candidates:
+        c["strategy"] = "momentum"
+        c["regime"] = final_regime
+
     ranked_signals = get_top_signals_for_day(
         filtered_candidates,
         strategy="momentum",
-        regime=regime_override or filtered_candidates[0]["regime"]
+        regime=final_regime
     )
     print(f"[Momentum] Final ranked signals on {date}: {len(ranked_signals)} candidates.")
 
@@ -97,6 +103,6 @@ def generate_signals(conn, date, regime_override=None, model=None):
 if __name__ == "__main__":
     import sqlite3
     conn = sqlite3.connect("backtest/backtest_bt.db")
-    signals = generate_signals(conn, "2024-03-15")
+    signals = generate_momentum_signals(conn, "2024-03-15")
     for s in signals:
         print(s)

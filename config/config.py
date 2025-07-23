@@ -119,11 +119,12 @@ IMPORT_MODE = "FY"   # or "QUARTERLY"
 # ----------------------------------------------------------------------
 #  External endpoints (J-Quants Light Plan)
 # ----------------------------------------------------------------------
-JQ_BASE_URL                = "https://api.jquants.com/v1"
-PRICE_ENDPOINT             = f"{JQ_BASE_URL}/prices/daily_quotes"
-FY_ENDPOINT                = f"{JQ_BASE_URL}/fins/statements"   # FY rows only
-LISTED_INFO_ENDPOINT       = f"{JQ_BASE_URL}/listed/info"
-TRADING_CALENDAR_ENDPOINT  = f"{JQ_BASE_URL}/markets/trading_calendar"
+JQ_BASE_URL                     = "https://api.jquants.com/v1"
+PRICE_ENDPOINT                  = f"{JQ_BASE_URL}/prices/daily_quotes"
+FY_ENDPOINT                     = f"{JQ_BASE_URL}/fins/statements"   # FY rows only
+LISTED_INFO_ENDPOINT            = f"{JQ_BASE_URL}/listed/info"
+TRADING_CALENDAR_ENDPOINT       = f"{JQ_BASE_URL}/markets/trading_calendar"
+ANNOUNCEMENT_CALENDAR_ENDPOINT  = f"{JQ_BASE_URL}/fins/announcement"
 
 # ----------------------------------------------------------------------
 #  Project metadata / UX
